@@ -1,0 +1,69 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "social-science-replicability"
+version = "0.1.0"
+description = "Multi-agent system for automatic replication of social science papers"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+authors = [
+    {name = "Your Name", email = "your.email@example.com"}
+]
+keywords = ["replication", "social-science", "agents", "llm"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+
+dependencies = [
+    "openai>=1.0.0",
+    "anthropic>=0.20.0",
+    "pymupdf>=1.23.0",
+    "pdfplumber>=0.10.0",
+    "pandas>=2.1.0",
+    "numpy>=1.24.0",
+    "statsmodels>=0.14.0",
+    "scipy>=1.11.0",
+    "matplotlib>=3.8.0",
+    "seaborn>=0.13.0",
+    "plotly>=5.17.0",
+    "jupyter-client>=8.0.0",
+    "nbformat>=5.9.0",
+    "ipykernel>=6.0.0",
+    "pydantic>=2.5.0",
+    "python-dotenv>=1.0.0",
+    "pyyaml>=6.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.21.0",
+    "black>=23.0.0",
+    "ruff>=0.1.0",
+]
+r-support = [
+    "rpy2>=3.5.0",
+]
+
+[project.scripts]
+replicate = "src.main:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]
+
+[tool.black]
+line-length = 100
+target-version = ['py311']
+
+[tool.ruff]
+line-length = 100
+select = ["E", "F", "I", "N", "W"]
+ignore = ["E501"]
