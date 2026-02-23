@@ -1,12 +1,15 @@
 """Pydantic schemas for the replication system.
 
-This module defines all data structures used for communication between agents.
+This module defines all data structures used for communication between agents,
+including the LangGraph GraphState for workflow orchestration.
 """
 
+import operator
 from enum import Enum
-from typing import Any, Optional
+from typing import Annotated, Any, Optional
 
 from pydantic import BaseModel, Field
+from typing_extensions import TypedDict
 
 
 # =============================================================================
@@ -63,6 +66,10 @@ class TableSpec(BaseModel):
     panel_structure: Optional[str] = Field(
         default=None, description="Panel structure if applicable (e.g., Panel A, Panel B)"
     )
+    template_markdown: Optional[str] = Field(
+        default=None,
+        description="Markdown table template with XXX for values and --- for empty cells",
+    )
 
 
 class PlotSpec(BaseModel):
@@ -83,6 +90,10 @@ class PlotSpec(BaseModel):
     notes: Optional[str] = Field(default=None, description="Figure notes")
     subplot_structure: Optional[str] = Field(
         default=None, description="Subplot arrangement if applicable"
+    )
+    template_code: Optional[str] = Field(
+        default=None,
+        description="Matplotlib code skeleton with axes/labels/legend but no data",
     )
 
 
@@ -324,3 +335,58 @@ class ReplicationState(BaseModel):
     errors: list[str] = Field(default_factory=list, description="Accumulated errors")
     warnings: list[str] = Field(default_factory=list, description="Accumulated warnings")
     current_step: Optional[str] = Field(default=None, description="Current workflow step")
+
+
+# =============================================================================
+# Collector (Step 0) - Paper Entry
+# =============================================================================
+
+
+class PaperEntry(BaseModel):
+    """Metadata for a paper to be processed by the Collector agent."""
+
+    paper_id: str = Field(..., description="Unique identifier for the paper")
+    pdf_path: str = Field(..., description="Path to the paper PDF file")
+    data_paths: list[str] = Field(
+        default_factory=list, description="Paths to associated data files"
+    )
+    replication_package_path: Optional[str] = Field(
+        default=None, description="Path to original replication package"
+    )
+    metadata: dict[str, Any] = Field(
+        default_factory=dict, description="Additional metadata (authors, year, etc.)"
+    )
+
+
+# =============================================================================
+# LangGraph State
+# =============================================================================
+
+
+class GraphState(TypedDict, total=False):
+    """State for the LangGraph replication workflow.
+
+    Uses Annotated types with operator.add for accumulation of errors/warnings
+    across graph nodes.
+    """
+
+    # Input paths
+    paper_pdf_path: str
+    data_path: str
+    output_dir: str
+    paper_id: str
+    replication_package_path: Optional[str]
+
+    # Agent outputs (set by individual nodes)
+    paper_summary: Optional[PaperSummary]
+    replication_results: Optional[ReplicationResults]
+    verification_report: Optional[VerificationReport]
+    explanation_report: Optional[ExplanationReport]
+
+    # Accumulating metadata
+    errors: Annotated[list[str], operator.add]
+    warnings: Annotated[list[str], operator.add]
+    current_step: str
+
+    # Flow control
+    success: bool

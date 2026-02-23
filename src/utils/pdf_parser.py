@@ -39,6 +39,7 @@ def extract_text_from_pdf(pdf_path: str) -> str:
     try:
         doc = fitz.open(pdf_path)
         text_parts = []
+        num_pages = len(doc)
 
         for page_num, page in enumerate(doc):
             page_text = page.get_text("text")
@@ -48,7 +49,7 @@ def extract_text_from_pdf(pdf_path: str) -> str:
         doc.close()
         full_text = "".join(text_parts)
 
-        logger.info(f"Extracted {len(full_text)} characters from {len(doc)} pages")
+        logger.info(f"Extracted {len(full_text)} characters from {num_pages} pages")
         return full_text
 
     except Exception as e:
@@ -158,8 +159,8 @@ def extract_figure_captions(text: str) -> list[dict]:
     Returns:
         List of dicts with 'figure_number' and 'caption'.
     """
-    # Pattern for figure captions
-    pattern = r"(?i)(Figure|Fig\.?)\s*(\d+[A-Za-z]?)[:\.]?\s*([^\n]+(?:\n(?![A-Z])[^\n]+)*)"
+    # Pattern for figure captions (supports dotted numbering like Figure 2.1)
+    pattern = r"(?i)(Figure|Fig\.?)\s*(\d+(?:\.\d+)?[A-Za-z]?)[:\.]?\s*([^\n]+(?:\n(?![A-Z])[^\n]+)*)"
 
     captions = []
     for match in re.finditer(pattern, text):
@@ -182,8 +183,8 @@ def extract_table_captions(text: str) -> list[dict]:
     Returns:
         List of dicts with 'table_number' and 'caption'.
     """
-    # Pattern for table captions
-    pattern = r"(?i)(Table)\s*(\d+[A-Za-z]?)[:\.]?\s*([^\n]+(?:\n(?![A-Z])[^\n]+)*)"
+    # Pattern for table captions (supports dotted numbering like Table 2.1)
+    pattern = r"(?i)(Table)\s*(\d+(?:\.\d+)?[A-Za-z]?)[:\.]?\s*([^\n]+(?:\n(?![A-Z])[^\n]+)*)"
 
     captions = []
     for match in re.finditer(pattern, text):

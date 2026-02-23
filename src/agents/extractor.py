@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 from typing import Optional
 
+from langchain_core.language_models import BaseChatModel
+
 from ..models.schemas import (
     PaperSummary,
     DataProcessingStep,
@@ -115,6 +117,70 @@ Remember: DO NOT include any actual results or numerical findings.
 Respond with valid JSON only."""
 
 
+TEMPLATE_GENERATION_SYSTEM_PROMPT = """You are a structural template specialist for academic paper tables and figures.
+
+Your task is to generate STRUCTURAL TEMPLATES that show the exact layout of tables and figures
+from a paper — without any actual numerical results.
+
+For tables: produce a markdown table where every data cell contains XXX (for cells that should
+have values) or --- (for cells that are structurally empty). Include the caption above the table.
+
+For figures: produce a minimal matplotlib code skeleton that sets up the correct plot type,
+axes labels, legend entries, and subplot structure — but contains NO data."""
+
+
+TEMPLATE_GENERATION_PROMPT = """Given the following paper text and extracted table/figure specifications,
+generate structural templates for each item.
+
+## Paper Text (excerpt):
+{paper_text}
+
+## Extracted Tables:
+{table_specs_json}
+
+## Extracted Figures:
+{figure_specs_json}
+
+## Instructions:
+
+For each table, produce a markdown template like:
+
+**Table 2.1: Effect of X on Y**
+
+| | (1) OLS | (2) Logit | (3) FE |
+|---|---|---|---|
+| Treatment | XXX | XXX | XXX |
+| | (XXX) | (XXX) | (XXX) |
+| Control A | XXX | XXX | XXX |
+| Observations | XXX | XXX | XXX |
+| R² | XXX | XXX | --- |
+
+Use XXX for cells that should contain values, (XXX) for standard errors, and --- for empty cells.
+
+For each figure, produce a matplotlib code skeleton like:
+
+```python
+import matplotlib.pyplot as plt
+fig, ax = plt.subplots(1, 1, figsize=(8, 6))
+ax.set_xlabel("X Label")
+ax.set_ylabel("Y Label")
+ax.set_title("Figure Title")
+ax.legend(["Group A", "Group B"])
+plt.tight_layout()
+```
+
+Respond with valid JSON:
+{{
+    "table_templates": {{
+        "Table 2.1": "markdown template string",
+        "Table 2.2": "markdown template string"
+    }},
+    "figure_templates": {{
+        "Figure 1": "python code skeleton string"
+    }}
+}}"""
+
+
 class ExtractorAgent(BaseAgent):
     """Agent 1: Extracts methodology from papers.
 
@@ -123,17 +189,19 @@ class ExtractorAgent(BaseAgent):
     any actual results or findings.
     """
 
-    def __init__(self, config: Config):
+    def __init__(self, config: Config, chat_model: Optional[BaseChatModel] = None):
         """Initialize the extractor agent.
 
         Args:
             config: Configuration object.
+            chat_model: Optional LangChain chat model for DI/testing.
         """
         super().__init__(
             config=config,
             name="Extractor",
             role="methodological extraction specialist",
             goal="Extract methodology from papers without revealing results",
+            chat_model=chat_model,
         )
 
     def run(
@@ -218,6 +286,9 @@ class ExtractorAgent(BaseAgent):
             # Validate no results leaked
             self._validate_no_results(paper_summary)
 
+            # Generate structural templates (non-fatal)
+            self._generate_templates(paper_text, paper_summary)
+
             logger.info(
                 f"Extraction complete: {len(paper_summary.tables)} tables, "
                 f"{len(paper_summary.figures)} figures"
@@ -228,6 +299,57 @@ class ExtractorAgent(BaseAgent):
         except Exception as e:
             logger.error(f"Failed to parse extraction response: {e}")
             raise ValueError(f"Extraction failed: {e}")
+
+    def _generate_templates(self, paper_text: str, summary: PaperSummary) -> None:
+        """Generate structural templates for tables and figures.
+
+        Modifies the summary in-place, setting template_markdown on TableSpecs
+        and template_code on PlotSpecs. Non-fatal: logs warnings on failure.
+        """
+        if not summary.tables and not summary.figures:
+            return
+
+        table_specs_json = json.dumps(
+            [t.model_dump(exclude={"template_markdown"}) for t in summary.tables],
+            indent=2,
+            default=str,
+        )
+        figure_specs_json = json.dumps(
+            [f.model_dump(exclude={"template_code"}) for f in summary.figures],
+            indent=2,
+            default=str,
+        )
+
+        prompt = TEMPLATE_GENERATION_PROMPT.format(
+            paper_text=paper_text[:30000],
+            table_specs_json=table_specs_json,
+            figure_specs_json=figure_specs_json,
+        )
+
+        try:
+            response = self.generate_json(
+                prompt=prompt,
+                system_prompt=TEMPLATE_GENERATION_SYSTEM_PROMPT,
+            )
+
+            # Apply table templates
+            table_templates = response.get("table_templates", {})
+            for table_spec in summary.tables:
+                template = table_templates.get(table_spec.table_number)
+                if template:
+                    table_spec.template_markdown = template
+                    logger.info(f"Set template for {table_spec.table_number}")
+
+            # Apply figure templates
+            figure_templates = response.get("figure_templates", {})
+            for figure_spec in summary.figures:
+                template = figure_templates.get(figure_spec.figure_number)
+                if template:
+                    figure_spec.template_code = template
+                    logger.info(f"Set template for {figure_spec.figure_number}")
+
+        except Exception as e:
+            logger.warning(f"Template generation failed (non-fatal): {e}")
 
     def _validate_no_results(self, summary: PaperSummary) -> None:
         """Validate that the summary doesn't contain actual results.

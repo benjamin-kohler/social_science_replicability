@@ -2,10 +2,12 @@
 
 import base64
 import json
+import re
 from pathlib import Path
 from typing import Any, Optional
 
 import pandas as pd
+from langchain_core.language_models import BaseChatModel
 
 from ..models.schemas import (
     ReplicationResults,
@@ -67,26 +69,83 @@ Provide your verification in this JSON format:
 Focus on whether the substantive findings match, not formatting."""
 
 
+GROUND_TRUTH_EXTRACTION_PROMPT = """Extract ALL numerical values from the following table in the paper.
+
+## Table: {table_number}
+{caption}
+
+## Relevant pages from the paper:
+{page_text}
+
+## Expected structure:
+- Columns: {columns}
+- Rows: {rows}
+
+Extract every value from the table: coefficients, standard errors, t-statistics, p-values,
+significance stars, N (observations), R², and any other statistics.
+
+Return a JSON object with this structure:
+{{
+    "table_number": "{table_number}",
+    "values": {{
+        "row_name": {{
+            "column_name": "value_as_string (e.g., '0.234***', '(0.012)', '1,234')"
+        }}
+    }},
+    "summary_stats": {{
+        "column_name": {{
+            "N": "value",
+            "R_squared": "value"
+        }}
+    }},
+    "notes": "any relevant notes about the table"
+}}
+
+Extract EXACTLY what appears in the paper. Preserve significance stars (*, **, ***).
+Preserve parentheses around standard errors. Include ALL rows and columns."""
+
+
 class VerifierAgent(BaseAgent):
     """Agent 3: Verifies replication results against original paper.
 
     This agent compares replicated tables and figures with the original
     paper and assigns grades based on how well the replication matches.
+
+    Vision methods for figure comparison use raw API clients (OpenAI/Anthropic)
+    since LangChain chat models don't support multimodal image inputs uniformly.
     """
 
-    def __init__(self, config: Config):
+    def __init__(self, config: Config, chat_model: Optional[BaseChatModel] = None):
         """Initialize the verifier agent.
 
         Args:
             config: Configuration object.
+            chat_model: Optional LangChain chat model for DI/testing.
         """
         super().__init__(
             config=config,
             name="Verifier",
             role="replication verification specialist",
             goal="Compare replicated results with originals and assign grades",
+            chat_model=chat_model,
         )
         self.tolerance = config.verification.numerical_tolerance
+        self._vision_provider = config.langgraph.default_provider.lower()
+        self._vision_client = None
+        self._ground_truth_cache: dict[str, dict] = {}
+
+    def _get_vision_client(self):
+        """Get or create a raw API client for vision requests."""
+        if self._vision_client is None:
+            if self._vision_provider == "openai":
+                from openai import OpenAI
+                self._vision_client = OpenAI(api_key=self.config.openai_api_key)
+            elif self._vision_provider == "anthropic":
+                from anthropic import Anthropic
+                self._vision_client = Anthropic(api_key=self.config.anthropic_api_key)
+            else:
+                raise ValueError(f"Vision not supported for provider: {self._vision_provider}")
+        return self._vision_client
 
     def run(
         self,
@@ -145,6 +204,90 @@ class VerifierAgent(BaseAgent):
         logger.info(f"Verification complete. Overall grade: {overall_grade.value}")
         return report
 
+    def _extract_table_pages(self, paper_text: str, table_number: str) -> str:
+        """Find PDF pages containing a table and return surrounding page text.
+
+        Uses the page markers (--- Page N ---) inserted by extract_text_from_pdf.
+        """
+        # Split text into pages using the markers
+        pages = re.split(r"\n--- Page (\d+) ---\n", paper_text)
+        # pages[0] is empty/preamble, then alternating: page_num, page_text, page_num, ...
+        page_map: dict[int, str] = {}
+        for i in range(1, len(pages) - 1, 2):
+            try:
+                page_num = int(pages[i])
+                page_map[page_num] = pages[i + 1]
+            except (ValueError, IndexError):
+                continue
+
+        # Find pages that mention this table
+        table_pages: list[int] = []
+        for page_num, page_text in page_map.items():
+            if re.search(re.escape(table_number), page_text, re.IGNORECASE):
+                table_pages.append(page_num)
+
+        if not table_pages:
+            # Fallback: try just the number part (e.g., "2.1" for "Table 2.1")
+            num_part = table_number.replace("Table ", "").replace("Figure ", "")
+            for page_num, page_text in page_map.items():
+                if re.search(rf"(?:Table|table)\s*{re.escape(num_part)}", page_text):
+                    table_pages.append(page_num)
+
+        if not table_pages:
+            return ""
+
+        # Include surrounding pages for context
+        all_pages: set[int] = set()
+        for p in table_pages:
+            all_pages.update(range(max(1, p - 1), p + 2))
+
+        result_parts = []
+        for p in sorted(all_pages):
+            if p in page_map:
+                result_parts.append(f"--- Page {p} ---\n{page_map[p]}")
+
+        return "\n".join(result_parts)
+
+    def _extract_original_values(
+        self,
+        paper_text: str,
+        table_number: str,
+        caption: str = "",
+        columns: list[str] | None = None,
+        rows: list[str] | None = None,
+    ) -> dict | None:
+        """Extract original table values from PDF using LLM.
+
+        Returns extracted values dict or None on failure. Results are cached.
+        """
+        if table_number in self._ground_truth_cache:
+            return self._ground_truth_cache[table_number]
+
+        page_text = self._extract_table_pages(paper_text, table_number)
+        if not page_text:
+            logger.warning(f"Could not find pages for {table_number}")
+            return None
+
+        prompt = GROUND_TRUTH_EXTRACTION_PROMPT.format(
+            table_number=table_number,
+            caption=caption,
+            page_text=page_text[:8000],
+            columns=", ".join(columns) if columns else "Not specified",
+            rows=", ".join(rows) if rows else "Not specified",
+        )
+
+        try:
+            result = self.generate_json(
+                prompt=prompt,
+                system_prompt=VERIFIER_SYSTEM_PROMPT,
+            )
+            self._ground_truth_cache[table_number] = result
+            logger.info(f"Extracted ground truth for {table_number}")
+            return result
+        except Exception as e:
+            logger.warning(f"Ground truth extraction failed for {table_number}: {e}")
+            return None
+
     def _verify_table(
         self,
         gen_table,
@@ -163,14 +306,22 @@ class VerifierAgent(BaseAgent):
                 comparison_notes=f"Replication failed: {gen_table.error_message}",
             )
 
-        # Extract relevant section from paper
-        table_section = self._extract_table_section(
+        # Try LLM-based ground truth extraction first
+        ground_truth = self._extract_original_values(
             paper_text, gen_table.table_number
         )
 
+        if ground_truth and ground_truth.get("values"):
+            original_content = json.dumps(ground_truth, indent=2)[:5000]
+        else:
+            # Fallback to text section extraction
+            original_content = self._extract_table_section(
+                paper_text, gen_table.table_number
+            )[:5000]
+
         # Use LLM to compare
         prompt = VERIFICATION_PROMPT.format(
-            original_content=table_section[:5000],
+            original_content=original_content,
             replicated_content=json.dumps(gen_table.data, indent=2)[:5000],
             item_type="table",
             item_id=gen_table.table_number,
@@ -293,12 +444,12 @@ Provide verification in JSON format:
     "key_findings_match": true/false
 }}"""
 
-        if self.provider == "openai":
+        if self._vision_provider == "openai":
             response = self._vision_openai(prompt_text, img_data, media_type)
-        elif self.provider == "anthropic":
+        elif self._vision_provider == "anthropic":
             response = self._vision_anthropic(prompt_text, img_data, media_type)
         else:
-            raise ValueError(f"Vision not supported for provider: {self.provider}")
+            raise ValueError(f"Vision not supported for provider: {self._vision_provider}")
 
         return ItemVerification(
             item_id=gen_figure.figure_number,
@@ -310,7 +461,7 @@ Provide verification in JSON format:
 
     def _vision_openai(self, prompt: str, img_b64: str, media_type: str) -> dict:
         """Send a vision request via the OpenAI API."""
-        import re
+        client = self._get_vision_client()
 
         messages = [
             {"role": "system", "content": VERIFIER_SYSTEM_PROMPT},
@@ -328,11 +479,18 @@ Provide verification in JSON format:
             },
         ]
 
-        response = self.client.chat.completions.create(
-            model=self.model,
+        # Newer models (gpt-5.x) require max_completion_tokens; older ones use max_tokens
+        model = self.config.langgraph.default_model
+        token_kwarg = (
+            {"max_completion_tokens": self.config.langgraph.max_tokens}
+            if model.startswith("gpt-5") or model.startswith("o")
+            else {"max_tokens": self.config.langgraph.max_tokens}
+        )
+        response = client.chat.completions.create(
+            model=model,
             messages=messages,
-            max_tokens=self.config.open_agent.max_tokens,
-            temperature=self.config.open_agent.temperature,
+            temperature=self.config.langgraph.temperature,
+            **token_kwarg,
         )
 
         text = response.choices[0].message.content
@@ -345,11 +503,11 @@ Provide verification in JSON format:
 
     def _vision_anthropic(self, prompt: str, img_b64: str, media_type: str) -> dict:
         """Send a vision request via the Anthropic API."""
-        import re
+        client = self._get_vision_client()
 
-        response = self.client.messages.create(
-            model=self.model,
-            max_tokens=self.config.open_agent.max_tokens,
+        response = client.messages.create(
+            model=self.config.langgraph.default_model,
+            max_tokens=self.config.langgraph.max_tokens,
             system=VERIFIER_SYSTEM_PROMPT,
             messages=[
                 {
@@ -429,8 +587,6 @@ Provide verification in JSON format:
 
     def _extract_table_section(self, paper_text: str, table_number: str) -> str:
         """Extract the section of paper text related to a specific table."""
-        import re
-
         # Find table mention and surrounding context
         pattern = rf"({re.escape(table_number)}[^\n]*(?:\n(?![A-Z])[^\n]*)*)"
         matches = re.findall(pattern, paper_text, re.IGNORECASE)
@@ -452,8 +608,6 @@ Provide verification in JSON format:
 
     def _extract_figure_section(self, paper_text: str, figure_number: str) -> str:
         """Extract the section of paper text related to a specific figure."""
-        import re
-
         pattern = rf"({re.escape(figure_number)}[^\n]*(?:\n(?![A-Z])[^\n]*)*)"
         matches = re.findall(pattern, paper_text, re.IGNORECASE)
 
