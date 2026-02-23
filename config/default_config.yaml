@@ -1,6 +1,6 @@
-open_agent:
+langgraph:
   default_provider: "openai"  # or "anthropic"
-  default_model: "gpt-4-turbo-preview"
+  default_model: "gpt-5.3-codex"
   temperature: 0.1
   max_tokens: 4000
 

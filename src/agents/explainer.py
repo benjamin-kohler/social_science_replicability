@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 from typing import Optional
 
+from langchain_core.language_models import BaseChatModel
+
 from ..models.schemas import (
     PaperSummary,
     ReplicationResults,
@@ -91,17 +93,19 @@ class ExplainerAgent(BaseAgent):
     why the replicated results differ from the original paper.
     """
 
-    def __init__(self, config: Config):
+    def __init__(self, config: Config, chat_model: Optional[BaseChatModel] = None):
         """Initialize the explainer agent.
 
         Args:
             config: Configuration object.
+            chat_model: Optional LangChain chat model for DI/testing.
         """
         super().__init__(
             config=config,
             name="Explainer",
             role="replication discrepancy analyst",
             goal="Explain why replication results differ from originals",
+            chat_model=chat_model,
         )
 
     def run(

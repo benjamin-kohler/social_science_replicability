@@ -3,6 +3,7 @@
 import os
 import tempfile
 from pathlib import Path
+from unittest.mock import patch, MagicMock
 
 import pytest
 import yaml
@@ -11,9 +12,10 @@ from src.models.config import (
     Config,
     ExecutionConfig,
     ExtractionConfig,
-    OpenAgentConfig,
+    LangGraphConfig,
     OutputConfig,
     VerificationConfig,
+    get_chat_model,
     load_config,
 )
 
@@ -21,22 +23,22 @@ from src.models.config import (
 class TestConfig:
     def test_default_values(self):
         config = Config()
-        assert config.open_agent.default_provider == "openai"
-        assert config.open_agent.temperature == 0.1
-        assert config.execution.timeout_seconds == 300
+        assert config.langgraph.default_provider == "openai"
+        assert config.langgraph.temperature == 0.1
+        assert config.execution.timeout_seconds == 900
         assert config.verification.numerical_tolerance == 0.01
         assert config.output.save_intermediate_results is True
 
     def test_custom_values(self):
         config = Config(
-            open_agent=OpenAgentConfig(
+            langgraph=LangGraphConfig(
                 default_provider="anthropic",
                 default_model="claude-3-opus-20240229",
                 temperature=0.5,
             ),
             execution=ExecutionConfig(timeout_seconds=60),
         )
-        assert config.open_agent.default_provider == "anthropic"
+        assert config.langgraph.default_provider == "anthropic"
         assert config.execution.timeout_seconds == 60
 
     def test_api_keys_excluded_from_dump(self):
@@ -53,7 +55,7 @@ class TestLoadConfig:
 
     def test_load_from_yaml(self, tmp_path):
         yaml_content = {
-            "open_agent": {
+            "langgraph": {
                 "default_provider": "anthropic",
                 "default_model": "claude-3-opus-20240229",
                 "temperature": 0.3,
@@ -65,7 +67,7 @@ class TestLoadConfig:
             yaml.dump(yaml_content, f)
 
         config = load_config(str(config_path))
-        assert config.open_agent.default_provider == "anthropic"
+        assert config.langgraph.default_provider == "anthropic"
         assert config.execution.timeout_seconds == 120
 
     def test_load_nonexistent_file(self):
@@ -77,3 +79,44 @@ class TestLoadConfig:
         monkeypatch.setenv("OPENAI_API_KEY", "test-key-123")
         config = load_config()
         assert config.openai_api_key == "test-key-123"
+
+
+class TestGetChatModel:
+    @patch("langchain_openai.ChatOpenAI")
+    def test_openai_provider(self, mock_chat_openai):
+        config = Config(
+            langgraph=LangGraphConfig(default_provider="openai"),
+            openai_api_key="test-key",
+        )
+        get_chat_model(config)
+        mock_chat_openai.assert_called_once()
+
+    @patch("langchain_anthropic.ChatAnthropic")
+    def test_anthropic_provider(self, mock_chat_anthropic):
+        config = Config(
+            langgraph=LangGraphConfig(default_provider="anthropic"),
+            anthropic_api_key="test-key",
+        )
+        get_chat_model(config)
+        mock_chat_anthropic.assert_called_once()
+
+    def test_unsupported_provider(self):
+        config = Config(
+            langgraph=LangGraphConfig(default_provider="unsupported"),
+        )
+        with pytest.raises(ValueError, match="Unsupported provider"):
+            get_chat_model(config)
+
+    def test_missing_api_key_openai(self):
+        config = Config(
+            langgraph=LangGraphConfig(default_provider="openai"),
+        )
+        with pytest.raises(ValueError, match="OPENAI_API_KEY"):
+            get_chat_model(config)
+
+    def test_missing_api_key_anthropic(self):
+        config = Config(
+            langgraph=LangGraphConfig(default_provider="anthropic"),
+        )
+        with pytest.raises(ValueError, match="ANTHROPIC_API_KEY"):
+            get_chat_model(config)

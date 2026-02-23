@@ -1,4 +1,8 @@
-"""Tests for the orchestrator pipeline."""
+"""Tests for the orchestrator pipeline.
+
+The orchestrator now uses LangGraph under the hood but preserves the same
+public API (run, run_extraction_only, run_from_summary).
+"""
 
 import json
 from pathlib import Path
@@ -18,36 +22,19 @@ from src.orchestrator import ReplicationOrchestrator
 
 
 class TestReplicationOrchestrator:
-    @patch("src.orchestrator.ExtractorAgent")
-    @patch("src.orchestrator.ReplicatorAgent")
-    @patch("src.orchestrator.VerifierAgent")
-    @patch("src.orchestrator.ExplainerAgent")
-    def test_init(self, mock_exp, mock_ver, mock_rep, mock_ext, config):
+    def test_init(self, config):
         orch = ReplicationOrchestrator(config=config)
         assert orch.config is config
-        mock_ext.assert_called_once_with(config)
-        mock_rep.assert_called_once_with(config)
-        mock_ver.assert_called_once_with(config)
-        mock_exp.assert_called_once_with(config)
 
-    @patch("src.orchestrator.ExtractorAgent")
-    @patch("src.orchestrator.ReplicatorAgent")
-    @patch("src.orchestrator.VerifierAgent")
-    @patch("src.orchestrator.ExplainerAgent")
-    def test_init_overrides(self, mock_exp, mock_ver, mock_rep, mock_ext, config):
+    def test_init_overrides(self, config):
         orch = ReplicationOrchestrator(
             config=config, model_provider="anthropic", model_name="claude-3"
         )
-        assert orch.config.open_agent.default_provider == "anthropic"
-        assert orch.config.open_agent.default_model == "claude-3"
+        assert orch.config.langgraph.default_provider == "anthropic"
+        assert orch.config.langgraph.default_model == "claude-3"
 
     @patch("src.orchestrator.ExtractorAgent")
-    @patch("src.orchestrator.ReplicatorAgent")
-    @patch("src.orchestrator.VerifierAgent")
-    @patch("src.orchestrator.ExplainerAgent")
-    def test_run_extraction_only(
-        self, mock_exp, mock_ver, mock_rep, mock_ext, config, paper_summary
-    ):
+    def test_run_extraction_only(self, mock_ext, config, paper_summary):
         mock_ext_instance = MagicMock()
         mock_ext_instance.run.return_value = paper_summary
         mock_ext.return_value = mock_ext_instance
@@ -61,12 +48,7 @@ class TestReplicationOrchestrator:
         mock_ext_instance.run.assert_called_once()
 
     @patch("src.orchestrator.ExtractorAgent")
-    @patch("src.orchestrator.ReplicatorAgent")
-    @patch("src.orchestrator.VerifierAgent")
-    @patch("src.orchestrator.ExplainerAgent")
-    def test_run_extraction_failure(
-        self, mock_exp, mock_ver, mock_rep, mock_ext, config
-    ):
+    def test_run_extraction_failure(self, mock_ext, config):
         mock_ext_instance = MagicMock()
         mock_ext_instance.run.side_effect = Exception("PDF parse error")
         mock_ext.return_value = mock_ext_instance

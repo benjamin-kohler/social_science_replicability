@@ -39,7 +39,8 @@ Thumbs.db
 
 # Project specific
 *.pdf
-data/raw/
+data/
 reports/
 outputs/
 .env
+src/.env

@@ -1,13 +1,14 @@
 """Base agent class for the replication system."""
 
 import json
+import re
 from abc import ABC, abstractmethod
 from typing import Any, Optional
 
-from openai import OpenAI
-from anthropic import Anthropic
+from langchain_core.language_models import BaseChatModel
+from langchain_core.messages import SystemMessage, HumanMessage
 
-from ..models.config import Config
+from ..models.config import Config, get_chat_model
 from ..utils.logging_utils import get_logger
 
 logger = get_logger(__name__)
@@ -16,8 +17,8 @@ logger = get_logger(__name__)
 class BaseAgent(ABC):
     """Base class for all agents in the replication system.
 
-    This provides a common interface for interacting with LLMs,
-    regardless of the underlying provider (OpenAI, Anthropic, etc.).
+    This provides a common interface for interacting with LLMs
+    via LangChain chat models, supporting any provider.
     """
 
     def __init__(
@@ -26,6 +27,7 @@ class BaseAgent(ABC):
         name: str,
         role: str,
         goal: str,
+        chat_model: Optional[BaseChatModel] = None,
     ):
         """Initialize the agent.
 
@@ -34,28 +36,26 @@ class BaseAgent(ABC):
             name: Agent name.
             role: Agent's role description.
             goal: Agent's goal/objective.
+            chat_model: Optional LangChain chat model for dependency injection.
+                If None, creates one from config via get_chat_model().
         """
         self.config = config
         self.name = name
         self.role = role
         self.goal = goal
-        self.provider = config.open_agent.default_provider
-        self.model = config.open_agent.default_model
-        self._client = None
+        self._chat_model = chat_model
 
-        logger.info(f"Initialized {self.name} agent with {self.provider}/{self.model}")
+        logger.info(
+            f"Initialized {self.name} agent with "
+            f"{config.langgraph.default_provider}/{config.langgraph.default_model}"
+        )
 
     @property
-    def client(self):
-        """Get or create the LLM client."""
-        if self._client is None:
-            if self.provider == "openai":
-                self._client = OpenAI(api_key=self.config.openai_api_key)
-            elif self.provider == "anthropic":
-                self._client = Anthropic(api_key=self.config.anthropic_api_key)
-            else:
-                raise ValueError(f"Unsupported provider: {self.provider}")
-        return self._client
+    def chat_model(self) -> BaseChatModel:
+        """Get or create the LangChain chat model."""
+        if self._chat_model is None:
+            self._chat_model = get_chat_model(self.config)
+        return self._chat_model
 
     def generate(
         self,
@@ -70,70 +70,42 @@ class BaseAgent(ABC):
         Args:
             prompt: The user prompt.
             system_prompt: Optional system prompt.
-            temperature: Override default temperature.
-            max_tokens: Override default max tokens.
-            response_format: Expected response format ('json' for JSON mode).
+            temperature: Override default temperature (unused with LangChain, kept for API compat).
+            max_tokens: Override default max tokens (unused with LangChain, kept for API compat).
+            response_format: Expected response format (unused with LangChain, kept for API compat).
 
         Returns:
             Generated response text.
         """
-        temp = temperature or self.config.open_agent.temperature
-        tokens = max_tokens or self.config.open_agent.max_tokens
-
         if system_prompt is None:
             system_prompt = f"You are {self.name}, a {self.role}. Your goal is: {self.goal}"
 
         logger.debug(f"{self.name} generating response...")
 
-        if self.provider == "openai":
-            return self._generate_openai(prompt, system_prompt, temp, tokens, response_format)
-        elif self.provider == "anthropic":
-            return self._generate_anthropic(prompt, system_prompt, temp, tokens)
-        else:
-            raise ValueError(f"Unsupported provider: {self.provider}")
-
-    def _generate_openai(
-        self,
-        prompt: str,
-        system_prompt: str,
-        temperature: float,
-        max_tokens: int,
-        response_format: Optional[str] = None,
-    ) -> str:
-        """Generate response using OpenAI."""
         messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": prompt},
+            SystemMessage(content=system_prompt),
+            HumanMessage(content=prompt),
         ]
 
-        kwargs = {
-            "model": self.model,
-            "messages": messages,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-        }
-
-        if response_format == "json":
-            kwargs["response_format"] = {"type": "json_object"}
-
-        response = self.client.chat.completions.create(**kwargs)
-        return response.choices[0].message.content
-
-    def _generate_anthropic(
-        self,
-        prompt: str,
-        system_prompt: str,
-        temperature: float,
-        max_tokens: int,
-    ) -> str:
-        """Generate response using Anthropic."""
-        response = self.client.messages.create(
-            model=self.model,
-            max_tokens=max_tokens,
-            system=system_prompt,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        return response.content[0].text
+        response = self.chat_model.invoke(messages)
+        content = response.content
+        # LangChain may return content as a list of blocks (e.g., newer OpenAI models
+        # with reasoning). Extract only text blocks, skip reasoning/other blocks.
+        if isinstance(content, list):
+            parts = []
+            for block in content:
+                if isinstance(block, dict):
+                    # Only extract from text-type blocks, skip reasoning blocks
+                    if block.get("type") == "text":
+                        parts.append(block.get("text", ""))
+                    elif "text" in block and block.get("type") != "reasoning":
+                        parts.append(block["text"])
+                elif isinstance(block, str):
+                    parts.append(block)
+                elif hasattr(block, "text") and getattr(block, "type", None) != "reasoning":
+                    parts.append(block.text)
+            content = "\n".join(parts)
+        return content
 
     def generate_json(
         self,
@@ -155,17 +127,22 @@ class BaseAgent(ABC):
         response = self.generate(
             prompt=json_prompt,
             system_prompt=system_prompt,
-            response_format="json" if self.provider == "openai" else None,
         )
 
         # Parse JSON from response
         try:
-            # Try to extract JSON from response
-            if response.strip().startswith("{"):
-                return json.loads(response)
+            # Strip markdown code fences if present
+            cleaned = response.strip()
+            if cleaned.startswith("```"):
+                # Remove ```json or ``` prefix and trailing ```
+                cleaned = re.sub(r"^```(?:json)?\s*\n?", "", cleaned)
+                cleaned = re.sub(r"\n?```\s*$", "", cleaned)
+                cleaned = cleaned.strip()
+
+            if cleaned.startswith("{"):
+                return json.loads(cleaned)
             else:
                 # Try to find JSON in response
-                import re
                 json_match = re.search(r"\{[\s\S]*\}", response)
                 if json_match:
                     return json.loads(json_match.group())

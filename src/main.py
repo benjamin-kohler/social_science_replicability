@@ -27,7 +27,7 @@ def run_replication(
     replication_package_path: Optional[str] = None,
     output_dir: str = "reports",
     model_provider: str = "openai",
-    model_name: str = "gpt-4-turbo-preview",
+    model_name: str = "gpt-5.3-codex",
     config_path: Optional[str] = None,
     extraction_only: bool = False,
     log_level: str = "INFO",
@@ -57,8 +57,8 @@ def run_replication(
 
     # Load configuration
     config = load_config(config_path)
-    config.open_agent.default_provider = model_provider
-    config.open_agent.default_model = model_name
+    config.langgraph.default_provider = model_provider
+    config.langgraph.default_model = model_name
 
     # Create output directory
     output_path = Path(output_dir)
@@ -198,8 +198,8 @@ Examples:
     )
     parser.add_argument(
         "--model-name",
-        default="gpt-4-turbo-preview",
-        help="Model name (default: gpt-4-turbo-preview)",
+        default="gpt-5.3-codex",
+        help="Model name (default: gpt-5.3-codex)",
     )
     parser.add_argument(
         "--config",

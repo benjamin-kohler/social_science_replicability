@@ -9,11 +9,11 @@ from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 
 
-class OpenAgentConfig(BaseModel):
-    """Configuration for the agent framework."""
+class LangGraphConfig(BaseModel):
+    """Configuration for the LangGraph agent framework."""
 
     default_provider: str = Field(default="openai", description="LLM provider to use")
-    default_model: str = Field(default="gpt-4-turbo-preview", description="Default model")
+    default_model: str = Field(default="gpt-5.3-codex", description="Default model")
     temperature: float = Field(default=0.1, description="Temperature for LLM calls")
     max_tokens: int = Field(default=4000, description="Max tokens per response")
 
@@ -21,7 +21,7 @@ class OpenAgentConfig(BaseModel):
 class ExecutionConfig(BaseModel):
     """Configuration for code execution."""
 
-    timeout_seconds: int = Field(default=300, description="Timeout for code execution")
+    timeout_seconds: int = Field(default=900, description="Timeout for code execution")
     max_retries: int = Field(default=3, description="Max retries on failure")
     sandbox_type: str = Field(default="jupyter", description="Type of sandbox to use")
 
@@ -59,7 +59,7 @@ class OutputConfig(BaseModel):
 class Config(BaseModel):
     """Main configuration class."""
 
-    open_agent: OpenAgentConfig = Field(default_factory=OpenAgentConfig)
+    langgraph: LangGraphConfig = Field(default_factory=LangGraphConfig)
     execution: ExecutionConfig = Field(default_factory=ExecutionConfig)
     extraction: ExtractionConfig = Field(default_factory=ExtractionConfig)
     verification: VerificationConfig = Field(default_factory=VerificationConfig)
@@ -108,19 +108,59 @@ def load_config(config_path: Optional[str] = None) -> Config:
     return config
 
 
-def get_llm_client(config: Config):
-    """Get the appropriate LLM client based on configuration.
+def get_chat_model(config: Config):
+    """Get a LangChain chat model based on configuration.
 
     Args:
         config: Configuration object.
 
     Returns:
-        Configured LLM client (OpenAI or Anthropic).
+        A LangChain BaseChatModel instance (ChatOpenAI or ChatAnthropic).
+
+    Raises:
+        ValueError: If the provider is unsupported or API key is missing.
+    """
+    provider = config.langgraph.default_provider.lower()
+
+    if provider == "openai":
+        if not config.openai_api_key:
+            raise ValueError("OPENAI_API_KEY not set in environment")
+        from langchain_openai import ChatOpenAI
+        return ChatOpenAI(
+            model=config.langgraph.default_model,
+            temperature=config.langgraph.temperature,
+            max_tokens=config.langgraph.max_tokens,
+            api_key=config.openai_api_key,
+        )
+
+    elif provider == "anthropic":
+        if not config.anthropic_api_key:
+            raise ValueError("ANTHROPIC_API_KEY not set in environment")
+        from langchain_anthropic import ChatAnthropic
+        return ChatAnthropic(
+            model=config.langgraph.default_model,
+            temperature=config.langgraph.temperature,
+            max_tokens=config.langgraph.max_tokens,
+            api_key=config.anthropic_api_key,
+        )
+
+    else:
+        raise ValueError(f"Unsupported provider: {provider}")
+
+
+def get_llm_client(config: Config):
+    """Get a raw LLM client for direct API calls (e.g., vision).
+
+    Args:
+        config: Configuration object.
+
+    Returns:
+        Raw OpenAI or Anthropic client.
 
     Raises:
         ValueError: If no API key is configured for the selected provider.
     """
-    provider = config.open_agent.default_provider.lower()
+    provider = config.langgraph.default_provider.lower()
 
     if provider == "openai":
         if not config.openai_api_key:

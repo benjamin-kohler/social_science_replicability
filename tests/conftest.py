@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.models.config import Config, OpenAgentConfig, ExecutionConfig, VerificationConfig
+from src.models.config import Config, LangGraphConfig, ExecutionConfig, VerificationConfig
 from src.models.schemas import (
     DataProcessingStep,
     DiscrepancyAnalysis,
@@ -31,9 +31,9 @@ from src.models.schemas import (
 def config():
     """Create a test configuration."""
     return Config(
-        open_agent=OpenAgentConfig(
+        langgraph=LangGraphConfig(
             default_provider="openai",
-            default_model="gpt-4-turbo-preview",
+            default_model="gpt-5.3-codex",
             temperature=0.1,
             max_tokens=4000,
         ),

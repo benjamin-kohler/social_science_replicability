@@ -1,28 +1,325 @@
 """Orchestrator for the multi-agent replication workflow.
 
-This module coordinates the four agents in the replication pipeline:
+This module coordinates the agents in the replication pipeline using LangGraph:
+0. Collector: Organizes input papers and data (optional)
 1. Extractor: Extracts methodology from papers
 2. Replicator: Generates and executes replication code
 3. Verifier: Compares results with original
 4. Explainer: Analyzes discrepancies
 """
 
+import json
 from pathlib import Path
 from typing import Optional
 
+from langgraph.graph import StateGraph, END
+
 from .agents import ExtractorAgent, ReplicatorAgent, VerifierAgent, ExplainerAgent
-from .models.schemas import ReplicationState
+from .models.schemas import GraphState, ReplicationState
 from .models.config import Config, load_config
 from .utils.logging_utils import get_logger, setup_logging
 
 logger = get_logger(__name__)
 
 
+# =============================================================================
+# Graph Node Functions
+# =============================================================================
+
+
+def create_extraction_node(config: Config):
+    """Create a graph node that runs the Extractor agent."""
+
+    def extraction_node(state: GraphState) -> dict:
+        logger.info("Step 1: Extracting methodology...")
+        try:
+            agent = ExtractorAgent(config)
+            paper_summary = agent.run(
+                paper_path=state["paper_pdf_path"],
+                paper_id=state.get("paper_id"),
+            )
+            logger.info(
+                f"Extraction complete: {len(paper_summary.tables)} tables, "
+                f"{len(paper_summary.figures)} figures"
+            )
+
+            # Save intermediate result
+            output_dir = state.get("output_dir")
+            if output_dir and config.output.save_intermediate_results:
+                _save_intermediate(paper_summary, Path(output_dir) / "paper_summary.json")
+
+            return {
+                "paper_summary": paper_summary,
+                "current_step": "extraction",
+                "success": True,
+            }
+        except Exception as e:
+            logger.error(f"Extraction failed: {e}")
+            return {
+                "errors": [f"Extraction failed: {e}"],
+                "current_step": "extraction",
+                "success": False,
+            }
+
+    return extraction_node
+
+
+def create_replication_node(config: Config):
+    """Create a graph node that runs the Replicator agent."""
+
+    def replication_node(state: GraphState) -> dict:
+        logger.info("Step 2: Generating replication...")
+        try:
+            agent = ReplicatorAgent(config)
+            replication_results = agent.run(
+                paper_summary=state["paper_summary"],
+                data_path=state["data_path"],
+                output_dir=state.get("output_dir", "data/output"),
+            )
+            logger.info(
+                f"Replication complete: {len(replication_results.tables)} tables, "
+                f"{len(replication_results.figures)} figures"
+            )
+
+            output_dir = state.get("output_dir")
+            if output_dir and config.output.save_intermediate_results:
+                _save_intermediate(
+                    replication_results, Path(output_dir) / "replication_results.json"
+                )
+
+            return {
+                "replication_results": replication_results,
+                "current_step": "replication",
+                "success": True,
+            }
+        except Exception as e:
+            logger.error(f"Replication failed: {e}")
+            return {
+                "errors": [f"Replication failed: {e}"],
+                "current_step": "replication",
+                "success": False,
+            }
+
+    return replication_node
+
+
+def create_verification_node(config: Config):
+    """Create a graph node that runs the Verifier agent."""
+
+    def verification_node(state: GraphState) -> dict:
+        logger.info("Step 3: Verifying results...")
+        try:
+            agent = VerifierAgent(config)
+            verification_report = agent.run(
+                paper_path=state["paper_pdf_path"],
+                replication_results=state["replication_results"],
+            )
+            logger.info(
+                f"Verification complete. Overall grade: "
+                f"{verification_report.overall_grade.value}"
+            )
+
+            output_dir = state.get("output_dir")
+            if output_dir and config.output.save_intermediate_results:
+                _save_intermediate(
+                    verification_report, Path(output_dir) / "verification_report.json"
+                )
+
+            return {
+                "verification_report": verification_report,
+                "current_step": "verification",
+                "success": True,
+            }
+        except Exception as e:
+            logger.error(f"Verification failed: {e}")
+            return {
+                "errors": [f"Verification failed: {e}"],
+                "current_step": "verification",
+                "success": False,
+            }
+
+    return verification_node
+
+
+def create_explanation_node(config: Config):
+    """Create a graph node that runs the Explainer agent."""
+
+    def explanation_node(state: GraphState) -> dict:
+        logger.info("Step 4: Analyzing discrepancies...")
+        try:
+            agent = ExplainerAgent(config)
+            explanation_report = agent.run(
+                paper_path=state["paper_pdf_path"],
+                paper_summary=state["paper_summary"],
+                replication_results=state["replication_results"],
+                verification_report=state["verification_report"],
+                replication_package_path=state.get("replication_package_path"),
+            )
+            logger.info(
+                f"Explanation complete: {len(explanation_report.analyses)} "
+                f"discrepancies analyzed"
+            )
+
+            output_dir = state.get("output_dir")
+            if output_dir and config.output.save_intermediate_results:
+                _save_intermediate(
+                    explanation_report, Path(output_dir) / "explanation_report.json"
+                )
+
+            return {
+                "explanation_report": explanation_report,
+                "current_step": "complete",
+                "success": True,
+            }
+        except Exception as e:
+            logger.error(f"Explanation failed: {e}")
+            return {
+                "errors": [f"Explanation failed: {e}"],
+                "current_step": "explanation",
+                "success": False,
+            }
+
+    return explanation_node
+
+
+# =============================================================================
+# Conditional Edge Functions
+# =============================================================================
+
+
+def should_continue(state: GraphState) -> str:
+    """Route to next node or END based on success flag."""
+    if state.get("success", False):
+        return "continue"
+    return "stop"
+
+
+# =============================================================================
+# Graph Builders
+# =============================================================================
+
+
+def build_replication_graph(config: Config) -> StateGraph:
+    """Build the full 4-step replication graph.
+
+    Returns:
+        A compiled LangGraph StateGraph.
+    """
+    graph = StateGraph(GraphState)
+
+    # Add nodes
+    graph.add_node("extract", create_extraction_node(config))
+    graph.add_node("replicate", create_replication_node(config))
+    graph.add_node("verify", create_verification_node(config))
+    graph.add_node("explain", create_explanation_node(config))
+
+    # Set entry point
+    graph.set_entry_point("extract")
+
+    # Add conditional edges: stop pipeline on failure
+    graph.add_conditional_edges("extract", should_continue, {"continue": "replicate", "stop": END})
+    graph.add_conditional_edges("replicate", should_continue, {"continue": "verify", "stop": END})
+    graph.add_conditional_edges("verify", should_continue, {"continue": "explain", "stop": END})
+    graph.add_edge("explain", END)
+
+    return graph.compile()
+
+
+def build_extraction_only_graph(config: Config) -> StateGraph:
+    """Build a graph that only runs extraction.
+
+    Returns:
+        A compiled LangGraph StateGraph.
+    """
+    graph = StateGraph(GraphState)
+    graph.add_node("extract", create_extraction_node(config))
+    graph.set_entry_point("extract")
+    graph.add_edge("extract", END)
+    return graph.compile()
+
+
+def build_from_summary_graph(config: Config) -> StateGraph:
+    """Build a graph that starts from an existing summary (skips extraction).
+
+    Returns:
+        A compiled LangGraph StateGraph.
+    """
+    graph = StateGraph(GraphState)
+    graph.add_node("replicate", create_replication_node(config))
+    graph.add_node("verify", create_verification_node(config))
+    graph.add_node("explain", create_explanation_node(config))
+
+    graph.set_entry_point("replicate")
+    graph.add_conditional_edges("replicate", should_continue, {"continue": "verify", "stop": END})
+    graph.add_conditional_edges("verify", should_continue, {"continue": "explain", "stop": END})
+    graph.add_edge("explain", END)
+
+    return graph.compile()
+
+
+def build_extract_replicate_graph(config: Config) -> StateGraph:
+    """Build a graph that runs extraction + replication only (no verification/explanation).
+
+    Useful for benchmarking, where a separate judge model handles evaluation.
+
+    Returns:
+        A compiled LangGraph StateGraph.
+    """
+    graph = StateGraph(GraphState)
+    graph.add_node("extract", create_extraction_node(config))
+    graph.add_node("replicate", create_replication_node(config))
+
+    graph.set_entry_point("extract")
+    graph.add_conditional_edges("extract", should_continue, {"continue": "replicate", "stop": END})
+    graph.add_edge("replicate", END)
+
+    return graph.compile()
+
+
+# =============================================================================
+# Helper Functions
+# =============================================================================
+
+
+def _save_intermediate(obj, path: Path) -> None:
+    """Save an intermediate result to JSON."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w") as f:
+        json.dump(obj.model_dump(), f, indent=2, default=str)
+    logger.debug(f"Saved intermediate result to: {path}")
+
+
+def _graph_state_to_replication_state(
+    graph_result: dict,
+    paper_pdf_path: str,
+    data_path: str,
+    replication_package_path: Optional[str] = None,
+) -> ReplicationState:
+    """Convert LangGraph output dict to a ReplicationState for backward compatibility."""
+    return ReplicationState(
+        paper_pdf_path=paper_pdf_path,
+        data_path=data_path,
+        replication_package_path=replication_package_path,
+        paper_summary=graph_result.get("paper_summary"),
+        replication_results=graph_result.get("replication_results"),
+        verification_report=graph_result.get("verification_report"),
+        explanation_report=graph_result.get("explanation_report"),
+        errors=graph_result.get("errors", []),
+        warnings=graph_result.get("warnings", []),
+        current_step=graph_result.get("current_step"),
+    )
+
+
+# =============================================================================
+# Backward-Compatible Orchestrator
+# =============================================================================
+
+
 class ReplicationOrchestrator:
     """Orchestrates the multi-agent replication workflow.
 
-    This class manages the sequential execution of all four agents
-    and handles state passing between them.
+    This class provides the same API as the original orchestrator
+    but uses LangGraph under the hood.
     """
 
     def __init__(
@@ -42,19 +339,13 @@ class ReplicationOrchestrator:
 
         # Override model settings if provided
         if model_provider:
-            self.config.open_agent.default_provider = model_provider
+            self.config.langgraph.default_provider = model_provider
         if model_name:
-            self.config.open_agent.default_model = model_name
-
-        # Initialize agents
-        self.extractor = ExtractorAgent(self.config)
-        self.replicator = ReplicatorAgent(self.config)
-        self.verifier = VerifierAgent(self.config)
-        self.explainer = ExplainerAgent(self.config)
+            self.config.langgraph.default_model = model_name
 
         logger.info(
-            f"Orchestrator initialized with {self.config.open_agent.default_provider}/"
-            f"{self.config.open_agent.default_model}"
+            f"Orchestrator initialized with {self.config.langgraph.default_provider}/"
+            f"{self.config.langgraph.default_model}"
         )
 
     def run(
@@ -79,121 +370,31 @@ class ReplicationOrchestrator:
         """
         logger.info(f"Starting replication pipeline for: {paper_path}")
 
-        # Initialize state
-        state = ReplicationState(
-            paper_pdf_path=paper_path,
-            data_path=data_path,
-            replication_package_path=replication_package_path,
-        )
-
         # Create output directory
         output_path = Path(output_dir)
         output_path.mkdir(parents=True, exist_ok=True)
 
-        try:
-            # Step 1: Extract methodology
-            state.current_step = "extraction"
-            logger.info("Step 1: Extracting methodology...")
+        # Build and run the graph
+        compiled_graph = build_replication_graph(self.config)
 
-            state.paper_summary = self.extractor.run(
-                paper_path=paper_path,
-                paper_id=paper_id,
-            )
+        initial_state: GraphState = {
+            "paper_pdf_path": paper_path,
+            "data_path": data_path,
+            "output_dir": str(output_path),
+            "paper_id": paper_id or Path(paper_path).stem,
+            "replication_package_path": replication_package_path,
+            "errors": [],
+            "warnings": [],
+            "current_step": "starting",
+            "success": True,
+        }
 
-            logger.info(
-                f"Extraction complete: {len(state.paper_summary.tables)} tables, "
-                f"{len(state.paper_summary.figures)} figures"
-            )
+        result = compiled_graph.invoke(initial_state)
 
-            # Save intermediate result
-            if self.config.output.save_intermediate_results:
-                self._save_intermediate(state.paper_summary, output_path / "paper_summary.json")
-
-        except Exception as e:
-            logger.error(f"Extraction failed: {e}")
-            state.errors.append(f"Extraction failed: {e}")
-            return state
-
-        try:
-            # Step 2: Replicate
-            state.current_step = "replication"
-            logger.info("Step 2: Generating replication...")
-
-            state.replication_results = self.replicator.run(
-                paper_summary=state.paper_summary,
-                data_path=data_path,
-                output_dir=str(output_path),
-            )
-
-            logger.info(
-                f"Replication complete: {len(state.replication_results.tables)} tables, "
-                f"{len(state.replication_results.figures)} figures"
-            )
-
-            # Save intermediate result
-            if self.config.output.save_intermediate_results:
-                self._save_intermediate(
-                    state.replication_results, output_path / "replication_results.json"
-                )
-
-        except Exception as e:
-            logger.error(f"Replication failed: {e}")
-            state.errors.append(f"Replication failed: {e}")
-            return state
-
-        try:
-            # Step 3: Verify
-            state.current_step = "verification"
-            logger.info("Step 3: Verifying results...")
-
-            state.verification_report = self.verifier.run(
-                paper_path=paper_path,
-                replication_results=state.replication_results,
-            )
-
-            logger.info(f"Verification complete. Overall grade: {state.verification_report.overall_grade.value}")
-
-            # Save intermediate result
-            if self.config.output.save_intermediate_results:
-                self._save_intermediate(
-                    state.verification_report, output_path / "verification_report.json"
-                )
-
-        except Exception as e:
-            logger.error(f"Verification failed: {e}")
-            state.errors.append(f"Verification failed: {e}")
-            return state
-
-        try:
-            # Step 4: Explain discrepancies
-            state.current_step = "explanation"
-            logger.info("Step 4: Analyzing discrepancies...")
-
-            state.explanation_report = self.explainer.run(
-                paper_path=paper_path,
-                paper_summary=state.paper_summary,
-                replication_results=state.replication_results,
-                verification_report=state.verification_report,
-                replication_package_path=replication_package_path,
-            )
-
-            logger.info(f"Explanation complete: {len(state.explanation_report.analyses)} discrepancies analyzed")
-
-            # Save intermediate result
-            if self.config.output.save_intermediate_results:
-                self._save_intermediate(
-                    state.explanation_report, output_path / "explanation_report.json"
-                )
-
-        except Exception as e:
-            logger.error(f"Explanation failed: {e}")
-            state.errors.append(f"Explanation failed: {e}")
-            return state
-
-        state.current_step = "complete"
         logger.info("Replication pipeline complete!")
-
-        return state
+        return _graph_state_to_replication_state(
+            result, paper_path, data_path, replication_package_path
+        )
 
     def run_extraction_only(
         self,
@@ -202,8 +403,6 @@ class ReplicationOrchestrator:
     ) -> ReplicationState:
         """Run only the extraction step (Agent 1).
 
-        Useful for testing or when you only need the methodology summary.
-
         Args:
             paper_path: Path to the paper PDF.
             paper_id: Optional identifier for the paper.
@@ -211,21 +410,25 @@ class ReplicationOrchestrator:
         Returns:
             ReplicationState with paper_summary populated.
         """
-        state = ReplicationState(
-            paper_pdf_path=paper_path,
-            data_path="",  # Not used in extraction only
-        )
+        compiled_graph = build_extraction_only_graph(self.config)
 
-        try:
-            state.paper_summary = self.extractor.run(
-                paper_path=paper_path,
-                paper_id=paper_id,
-            )
-            state.current_step = "extraction_complete"
-        except Exception as e:
-            state.errors.append(f"Extraction failed: {e}")
+        initial_state: GraphState = {
+            "paper_pdf_path": paper_path,
+            "data_path": "",
+            "paper_id": paper_id or Path(paper_path).stem,
+            "errors": [],
+            "warnings": [],
+            "current_step": "starting",
+            "success": True,
+        }
 
-        return state
+        result = compiled_graph.invoke(initial_state)
+
+        # Map current_step for backward compatibility
+        if result.get("paper_summary") is not None:
+            result["current_step"] = "extraction_complete"
+
+        return _graph_state_to_replication_state(result, paper_path, "")
 
     def run_from_summary(
         self,
@@ -237,9 +440,6 @@ class ReplicationOrchestrator:
     ) -> ReplicationState:
         """Run the pipeline starting from an existing paper summary.
 
-        Useful when you've already extracted the methodology and want
-        to re-run the replication with different data or settings.
-
         Args:
             paper_summary: Existing PaperSummary object.
             data_path: Path to the data file(s).
@@ -250,58 +450,26 @@ class ReplicationOrchestrator:
         Returns:
             ReplicationState with all results.
         """
-        state = ReplicationState(
-            paper_pdf_path=paper_path,
-            data_path=data_path,
-            replication_package_path=replication_package_path,
-            paper_summary=paper_summary,
-        )
-
         output_path = Path(output_dir)
         output_path.mkdir(parents=True, exist_ok=True)
 
-        # Continue from step 2
-        try:
-            state.current_step = "replication"
-            state.replication_results = self.replicator.run(
-                paper_summary=paper_summary,
-                data_path=data_path,
-                output_dir=str(output_path),
-            )
-        except Exception as e:
-            state.errors.append(f"Replication failed: {e}")
-            return state
+        compiled_graph = build_from_summary_graph(self.config)
 
-        try:
-            state.current_step = "verification"
-            state.verification_report = self.verifier.run(
-                paper_path=paper_path,
-                replication_results=state.replication_results,
-            )
-        except Exception as e:
-            state.errors.append(f"Verification failed: {e}")
-            return state
+        initial_state: GraphState = {
+            "paper_pdf_path": paper_path,
+            "data_path": data_path,
+            "output_dir": str(output_path),
+            "paper_id": paper_summary.paper_id,
+            "replication_package_path": replication_package_path,
+            "paper_summary": paper_summary,
+            "errors": [],
+            "warnings": [],
+            "current_step": "starting",
+            "success": True,
+        }
 
-        try:
-            state.current_step = "explanation"
-            state.explanation_report = self.explainer.run(
-                paper_path=paper_path,
-                paper_summary=paper_summary,
-                replication_results=state.replication_results,
-                verification_report=state.verification_report,
-                replication_package_path=replication_package_path,
-            )
-        except Exception as e:
-            state.errors.append(f"Explanation failed: {e}")
-            return state
+        result = compiled_graph.invoke(initial_state)
 
-        state.current_step = "complete"
-        return state
-
-    def _save_intermediate(self, obj, path: Path) -> None:
-        """Save an intermediate result to JSON."""
-        import json
-
-        with open(path, "w") as f:
-            json.dump(obj.model_dump(), f, indent=2, default=str)
-        logger.debug(f"Saved intermediate result to: {path}")
+        return _graph_state_to_replication_state(
+            result, paper_path, data_path, replication_package_path
+        )

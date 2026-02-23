@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = {text = "MIT"}
 authors = [
-    {name = "Your Name", email = "your.email@example.com"}
+    {name = "Benjamin Kohler"}
 ]
 keywords = ["replication", "social-science", "agents", "llm"]
 classifiers = [
@@ -22,6 +22,10 @@ classifiers = [
 ]
 
 dependencies = [
+    "langgraph>=0.2.0",
+    "langchain-core>=0.3.0",
+    "langchain-openai>=0.2.0",
+    "langchain-anthropic>=0.2.0",
     "openai>=1.0.0",
     "anthropic>=0.20.0",
     "pymupdf>=1.23.0",
@@ -54,6 +58,7 @@ r-support = [
 
 [project.scripts]
 replicate = "src.main:main"
+benchmark = "src.benchmark_cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

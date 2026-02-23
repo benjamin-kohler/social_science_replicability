@@ -1,0 +1,58 @@
+## Benchmark Configuration
+## Compare multiple LLM models on paper replication tasks.
+
+models:
+  ## gpt-5.2-codex via OpenAI API — used for structured (LangGraph pipeline)
+  - provider: openai
+    model_name: gpt-5.2-codex
+    api_key_env: OPENAI_API_KEY
+    approaches:
+      - structured
+
+  ## opencode/gpt-5-nano via opencode CLI — free tier baseline
+  - provider: opencode
+    model_name: gpt-5-nano
+    api_key_env: OPENAI_API_KEY
+    approaches:
+      - freestyle
+
+  ## openai/gpt-5.2-codex via opencode CLI — requires opencode.json provider config
+  - provider: openai
+    model_name: gpt-5.2-codex
+    api_key_env: OPENAI_API_KEY
+    approaches:
+      - freestyle
+
+papers:
+  ## Laouénan & Rathelot (2022) — SKIPPED: 2.2GB .dta file causes all regressions to timeout
+  ## TODO: re-enable once execution supports chunked/optimized FE estimation
+  # - paper_id: airbnb_discrimination
+  #   pdf_path: data/input/airbnb_discrimination/paper.pdf
+  #   data_path: data/input/airbnb_discrimination/data
+  #   replication_package_path: data/input/airbnb_discrimination/replication_package
+
+  ## Douenne & Fabre (2022) "Yellow Vests, Pessimistic Beliefs, and Carbon Tax Aversion"
+  ## AEJ: Economic Policy. RD design with misclassification discovery.
+  - paper_id: yellow_vests_carbon_tax
+    pdf_path: data/input/yellow_vests_carbon_tax/paper.pdf
+    data_path: data/input/yellow_vests_carbon_tax/data
+    replication_package_path: data/input/yellow_vests_carbon_tax/replication_package
+
+  ## Gortz, Tsoukalas & Zanetti "News Shocks under Financial Frictions"
+  ## AEJ: Macroeconomics. VAR with max-share identification.
+  - paper_id: news_shocks_financial
+    pdf_path: data/input/news_shocks_financial/paper.pdf
+    data_path: data/input/news_shocks_financial/data
+    replication_package_path: data/input/news_shocks_financial/replication_package
+
+approaches:
+  - freestyle
+  - structured
+
+judge:
+  provider: openai
+  model_name: gpt-5.2-codex
+
+output_dir: data/benchmark_results
+opencode_binary: /Users/bkohler/.opencode/bin/opencode
+timeout_seconds: 3600

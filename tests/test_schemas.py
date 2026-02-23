@@ -10,7 +10,9 @@ from src.models.schemas import (
     GeneratedCode,
     GeneratedFigure,
     GeneratedTable,
+    GraphState,
     ItemVerification,
+    PaperEntry,
     PaperSummary,
     PlotSpec,
     RegressionSpec,
@@ -216,3 +218,58 @@ class TestReplicationState:
         )
         assert state.paper_summary is not None
         assert state.current_step == "verification"
+
+
+class TestPaperEntry:
+    def test_create_minimal(self):
+        entry = PaperEntry(
+            paper_id="smith2024",
+            pdf_path="/path/to/paper.pdf",
+        )
+        assert entry.paper_id == "smith2024"
+        assert entry.data_paths == []
+        assert entry.replication_package_path is None
+        assert entry.metadata == {}
+
+    def test_create_full(self):
+        entry = PaperEntry(
+            paper_id="smith2024",
+            pdf_path="/path/to/paper.pdf",
+            data_paths=["/path/to/data.csv", "/path/to/data2.dta"],
+            replication_package_path="/path/to/package/",
+            metadata={"authors": ["Smith", "Jones"], "year": 2024},
+        )
+        assert len(entry.data_paths) == 2
+        assert entry.metadata["year"] == 2024
+
+    def test_missing_required(self):
+        with pytest.raises(ValidationError):
+            PaperEntry(paper_id="test")  # Missing pdf_path
+
+
+class TestGraphState:
+    def test_is_typed_dict(self):
+        """GraphState should be a TypedDict, not a Pydantic model."""
+        state: GraphState = {
+            "paper_pdf_path": "paper.pdf",
+            "data_path": "data.csv",
+            "output_dir": "output/",
+            "paper_id": "test",
+            "errors": [],
+            "warnings": [],
+            "current_step": "starting",
+            "success": True,
+        }
+        assert state["paper_pdf_path"] == "paper.pdf"
+        assert state["errors"] == []
+
+    def test_errors_accumulation_annotation(self):
+        """Verify errors field has the operator.add annotation for LangGraph."""
+        import operator
+        from typing import get_type_hints, Annotated
+
+        hints = get_type_hints(GraphState, include_extras=True)
+        errors_hint = hints["errors"]
+        # Check it's Annotated with operator.add
+        assert hasattr(errors_hint, "__metadata__")
+        assert operator.add in errors_hint.__metadata__
