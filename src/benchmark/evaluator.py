@@ -1,16 +1,14 @@
-"""Shared judge evaluator using Verifier + Explainer agents."""
+"""Shared judge evaluator for benchmark runs."""
 
 import json
 import os
 from pathlib import Path
 
-from ..agents.verifier import VerifierAgent
-from ..agents.explainer import ExplainerAgent
-from ..models.config import Config, LangGraphConfig
-from ..models.schemas import PaperSummary, ReplicationResults
+from ..models.schemas import PaperSummary
 from ..utils.logging_utils import get_logger
 from .artifact_parser import ArtifactParser
 from .config import JudgeConfig, PaperSpec
+from .judge import Judge
 from .results import EvaluationResult, RunArtifacts
 
 logger = get_logger(__name__)
@@ -19,34 +17,28 @@ logger = get_logger(__name__)
 class SharedEvaluator:
     """Evaluates run artifacts using a fixed judge model.
 
-    Uses the existing VerifierAgent and ExplainerAgent with a consistent
-    judge model so that grading is comparable across different benchmark runs.
+    Uses the Judge class (plain SDK) with a consistent model so that
+    grading is comparable across different benchmark runs.
     """
 
     def __init__(self, judge_config: JudgeConfig):
-        """Initialize the evaluator with a judge model config.
-
-        Args:
-            judge_config: Specifies the provider and model to use for grading.
-        """
         self.judge_config = judge_config
-        self._config = self._build_judge_config()
+        self._judge = self._build_judge()
 
-    def _build_judge_config(self) -> Config:
-        """Build a Config locked to the judge model."""
-        # Determine which API key env var to use
+    def _build_judge(self) -> Judge:
+        """Build a Judge from the config."""
         provider = self.judge_config.provider.lower()
-        config = Config(
-            langgraph=LangGraphConfig(
-                default_provider=provider,
-                default_model=self.judge_config.model_name,
-            ),
-        )
         if provider == "openai":
-            config.openai_api_key = os.environ.get("OPENAI_API_KEY", "")
+            api_key = os.environ.get("OPENAI_API_KEY", "")
         elif provider == "anthropic":
-            config.anthropic_api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-        return config
+            api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        else:
+            api_key = ""
+        return Judge(
+            provider=provider,
+            model=self.judge_config.model_name,
+            api_key=api_key,
+        )
 
     def evaluate(
         self,
@@ -58,51 +50,40 @@ class SharedEvaluator:
 
         Args:
             paper: Paper specification with paths.
-            artifacts: Run artifacts (may or may not contain parsed ReplicationResults).
-            paper_summary: Optional PaperSummary for the Explainer agent.
+            artifacts: Run artifacts (workspace_dir must exist).
+            paper_summary: Methodology summary. If None, loaded from workspace.
 
         Returns:
             EvaluationResult with grades and analyses.
         """
-        # Get or parse ReplicationResults
+        # Parse artifacts into ReplicationResults
         replication_results = artifacts.replication_results
         if replication_results is None:
-            logger.info("Parsing freestyle artifacts into ReplicationResults")
+            logger.info("Parsing workspace artifacts into ReplicationResults")
             replication_results = ArtifactParser.parse(
                 Path(artifacts.workspace_dir), paper.paper_id
             )
 
-        # Run Verifier with judge model
-        logger.info(f"Running judge verification for {paper.paper_id}")
-        verifier = VerifierAgent(self._config)
-        verification_report = verifier.run(
-            paper_path=paper.pdf_path,
-            replication_results=replication_results,
-        )
-
-        # Run Explainer if there are non-A grades and we have a paper summary
-        explanation_report = None
-        non_a_items = [
-            v for v in verification_report.item_verifications
-            if v.grade.value != "A"
-        ]
-        if non_a_items and paper_summary is not None:
-            logger.info(f"Running judge explanation for {len(non_a_items)} discrepancies")
-            explainer = ExplainerAgent(self._config)
-            explanation_report = explainer.run(
-                paper_path=paper.pdf_path,
-                paper_summary=paper_summary,
-                replication_results=replication_results,
-                verification_report=verification_report,
-                replication_package_path=paper.replication_package_path,
+        # Load paper_summary from workspace if not provided
+        if paper_summary is None:
+            paper_summary = self._load_summary_from_workspace(
+                artifacts.workspace_dir, paper.paper_id
             )
 
-        # Save reports to disk alongside workspace
-        self._save_reports(
-            artifacts.workspace_dir, verification_report, explanation_report
+        # Single judge call produces both reports
+        logger.info(f"Running judge for {paper.paper_id}")
+        verification_report, explanation_report = self._judge.run(
+            paper_path=paper.pdf_path,
+            paper_summary=paper_summary,
+            replication_results=replication_results,
+            replication_package_path=paper.replication_package_path,
         )
 
-        # Build item grades map
+        # Save reports
+        self._save_reports(
+            artifacts.workspace_dir, verification_report, explanation_report,
+        )
+
         item_grades = {
             v.item_id: v.grade.value
             for v in verification_report.item_verifications
@@ -116,12 +97,23 @@ class SharedEvaluator:
         )
 
     @staticmethod
-    def _save_reports(
-        workspace_dir: str,
-        verification_report,
-        explanation_report,
-    ) -> None:
-        """Save verification and explanation reports to the run directory."""
+    def _load_summary_from_workspace(
+        workspace_dir: str, paper_id: str,
+    ) -> PaperSummary:
+        """Load PaperSummary from the workspace's methodology_summary.json."""
+        summary_path = Path(workspace_dir) / "methodology_summary.json"
+        if summary_path.exists():
+            data = json.loads(summary_path.read_text())
+            return PaperSummary(**data)
+        logger.warning(f"No methodology_summary.json in {workspace_dir}, using minimal summary")
+        return PaperSummary(
+            paper_id=paper_id, title="Unknown",
+            data_description="Unknown", data_context="Unknown",
+        )
+
+    @staticmethod
+    def _save_reports(workspace_dir: str, verification_report, explanation_report) -> None:
+        """Save reports to the run directory (parent of workspace)."""
         run_dir = Path(workspace_dir).parent
         try:
             report_path = run_dir / "verification_report.json"

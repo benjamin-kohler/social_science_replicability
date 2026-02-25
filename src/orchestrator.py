@@ -14,7 +14,8 @@ from typing import Optional
 
 from langgraph.graph import StateGraph, END
 
-from .agents import ExtractorAgent, ReplicatorAgent, VerifierAgent, ExplainerAgent
+from .agents import ExtractorAgent, ReplicatorAgent
+from .benchmark.judge import Judge
 from .models.schemas import GraphState, ReplicationState
 from .models.config import Config, load_config
 from .utils.logging_utils import get_logger, setup_logging
@@ -103,19 +104,34 @@ def create_replication_node(config: Config):
     return replication_node
 
 
-def create_verification_node(config: Config):
-    """Create a graph node that runs the Verifier agent."""
+def create_judge_node(config: Config):
+    """Create a graph node that runs the unified Judge."""
 
-    def verification_node(state: GraphState) -> dict:
-        logger.info("Step 3: Verifying results...")
+    def judge_node(state: GraphState) -> dict:
+        logger.info("Step 3: Judging results...")
         try:
-            agent = VerifierAgent(config)
-            verification_report = agent.run(
+            import os
+            provider = config.langgraph.default_provider.lower()
+            if provider == "openai":
+                api_key = os.environ.get("OPENAI_API_KEY", "")
+            elif provider == "anthropic":
+                api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+            else:
+                api_key = ""
+
+            judge = Judge(
+                provider=provider,
+                model=config.langgraph.default_model,
+                api_key=api_key,
+            )
+            verification_report, explanation_report = judge.run(
                 paper_path=state["paper_pdf_path"],
+                paper_summary=state["paper_summary"],
                 replication_results=state["replication_results"],
+                replication_package_path=state.get("replication_package_path"),
             )
             logger.info(
-                f"Verification complete. Overall grade: "
+                f"Judging complete. Overall grade: "
                 f"{verification_report.overall_grade.value}"
             )
 
@@ -124,62 +140,28 @@ def create_verification_node(config: Config):
                 _save_intermediate(
                     verification_report, Path(output_dir) / "verification_report.json"
                 )
+                if explanation_report:
+                    _save_intermediate(
+                        explanation_report, Path(output_dir) / "explanation_report.json"
+                    )
 
-            return {
+            result = {
                 "verification_report": verification_report,
-                "current_step": "verification",
-                "success": True,
-            }
-        except Exception as e:
-            logger.error(f"Verification failed: {e}")
-            return {
-                "errors": [f"Verification failed: {e}"],
-                "current_step": "verification",
-                "success": False,
-            }
-
-    return verification_node
-
-
-def create_explanation_node(config: Config):
-    """Create a graph node that runs the Explainer agent."""
-
-    def explanation_node(state: GraphState) -> dict:
-        logger.info("Step 4: Analyzing discrepancies...")
-        try:
-            agent = ExplainerAgent(config)
-            explanation_report = agent.run(
-                paper_path=state["paper_pdf_path"],
-                paper_summary=state["paper_summary"],
-                replication_results=state["replication_results"],
-                verification_report=state["verification_report"],
-                replication_package_path=state.get("replication_package_path"),
-            )
-            logger.info(
-                f"Explanation complete: {len(explanation_report.analyses)} "
-                f"discrepancies analyzed"
-            )
-
-            output_dir = state.get("output_dir")
-            if output_dir and config.output.save_intermediate_results:
-                _save_intermediate(
-                    explanation_report, Path(output_dir) / "explanation_report.json"
-                )
-
-            return {
-                "explanation_report": explanation_report,
                 "current_step": "complete",
                 "success": True,
             }
+            if explanation_report:
+                result["explanation_report"] = explanation_report
+            return result
         except Exception as e:
-            logger.error(f"Explanation failed: {e}")
+            logger.error(f"Judging failed: {e}")
             return {
-                "errors": [f"Explanation failed: {e}"],
-                "current_step": "explanation",
+                "errors": [f"Judging failed: {e}"],
+                "current_step": "judge",
                 "success": False,
             }
 
-    return explanation_node
+    return judge_node
 
 
 # =============================================================================
@@ -210,17 +192,15 @@ def build_replication_graph(config: Config) -> StateGraph:
     # Add nodes
     graph.add_node("extract", create_extraction_node(config))
     graph.add_node("replicate", create_replication_node(config))
-    graph.add_node("verify", create_verification_node(config))
-    graph.add_node("explain", create_explanation_node(config))
+    graph.add_node("judge", create_judge_node(config))
 
     # Set entry point
     graph.set_entry_point("extract")
 
     # Add conditional edges: stop pipeline on failure
     graph.add_conditional_edges("extract", should_continue, {"continue": "replicate", "stop": END})
-    graph.add_conditional_edges("replicate", should_continue, {"continue": "verify", "stop": END})
-    graph.add_conditional_edges("verify", should_continue, {"continue": "explain", "stop": END})
-    graph.add_edge("explain", END)
+    graph.add_conditional_edges("replicate", should_continue, {"continue": "judge", "stop": END})
+    graph.add_edge("judge", END)
 
     return graph.compile()
 
@@ -246,13 +226,11 @@ def build_from_summary_graph(config: Config) -> StateGraph:
     """
     graph = StateGraph(GraphState)
     graph.add_node("replicate", create_replication_node(config))
-    graph.add_node("verify", create_verification_node(config))
-    graph.add_node("explain", create_explanation_node(config))
+    graph.add_node("judge", create_judge_node(config))
 
     graph.set_entry_point("replicate")
-    graph.add_conditional_edges("replicate", should_continue, {"continue": "verify", "stop": END})
-    graph.add_conditional_edges("verify", should_continue, {"continue": "explain", "stop": END})
-    graph.add_edge("explain", END)
+    graph.add_conditional_edges("replicate", should_continue, {"continue": "judge", "stop": END})
+    graph.add_edge("judge", END)
 
     return graph.compile()
 

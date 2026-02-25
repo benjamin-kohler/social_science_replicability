@@ -13,8 +13,6 @@ from langchain_core.messages import AIMessage
 from src.agents.base import BaseAgent
 from src.agents.extractor import ExtractorAgent
 from src.agents.replicator import ReplicatorAgent
-from src.agents.verifier import VerifierAgent
-from src.agents.explainer import ExplainerAgent
 from src.models.schemas import (
     ReplicationGrade,
     ItemVerification,
@@ -96,50 +94,15 @@ class TestBaseAgent:
 
 
 class TestExtractorAgent:
-    def test_init(self, config):
-        mock_model = _mock_chat_model("")
-        agent = ExtractorAgent(config, chat_model=mock_model)
-        assert agent.name == "Extractor"
+    @patch("src.agents.extractor.OpenAI")
+    def test_init(self, mock_openai, config):
+        agent = ExtractorAgent(config)
+        assert agent.model == "gpt-5.2"
+        assert agent.use_vision is False
 
-    @patch("src.agents.extractor.extract_text_from_pdf")
-    @patch("src.agents.extractor.extract_table_captions")
-    @patch("src.agents.extractor.extract_figure_captions")
-    def test_run(self, mock_fig_caps, mock_tbl_caps, mock_extract, config):
-        mock_extract.return_value = "Methods\nWe use OLS regression..."
-        mock_tbl_caps.return_value = [
-            {"table_number": "Table 1", "caption": "Summary Stats"}
-        ]
-        mock_fig_caps.return_value = []
-
-        llm_response = {
-            "paper_id": "test",
-            "title": "Test Paper",
-            "research_questions": ["Does X affect Y?"],
-            "data_description": "Panel data",
-            "data_context": "Natural experiment",
-            "data_processing_steps": [],
-            "tables": [
-                {
-                    "table_number": "Table 1",
-                    "caption": "Summary Stats",
-                    "column_names": ["Mean"],
-                    "row_names": ["X"],
-                    "regression_specs": [],
-                }
-            ],
-            "figures": [],
-        }
-
-        mock_model = _mock_chat_model(json.dumps(llm_response))
-        agent = ExtractorAgent(config, chat_model=mock_model)
-
-        result = agent.run(paper_path="test.pdf", paper_id="test")
-        assert result.paper_id == "test"
-        assert len(result.tables) == 1
-
-    def test_validate_no_results_warns_on_pvalues(self, config):
-        mock_model = _mock_chat_model("")
-        agent = ExtractorAgent(config, chat_model=mock_model)
+    @patch("src.agents.extractor.OpenAI")
+    def test_validate_no_results_warns_on_pvalues(self, mock_openai, config):
+        agent = ExtractorAgent(config)
         from src.models.schemas import PaperSummary
 
         # This should log a warning but not raise
@@ -152,206 +115,6 @@ class TestExtractorAgent:
 
 
 # ── VerifierAgent Tests ──────────────────────────────────────────────────
-
-
-class TestVerifierAgent:
-    def test_init(self, config):
-        mock_model = _mock_chat_model("")
-        agent = VerifierAgent(config, chat_model=mock_model)
-        assert agent.name == "Verifier"
-        assert agent.tolerance == 0.01
-
-    def test_calculate_overall_grade_all_a(self, config):
-        agent = VerifierAgent(config, chat_model=_mock_chat_model(""))
-        grades = [ReplicationGrade.A, ReplicationGrade.A, ReplicationGrade.A]
-        assert agent._calculate_overall_grade(grades) == ReplicationGrade.A
-
-    def test_calculate_overall_grade_mixed(self, config):
-        agent = VerifierAgent(config, chat_model=_mock_chat_model(""))
-        grades = [ReplicationGrade.A, ReplicationGrade.B, ReplicationGrade.C]
-        result = agent._calculate_overall_grade(grades)
-        assert result == ReplicationGrade.B  # avg = 3.0
-
-    def test_calculate_overall_grade_low(self, config):
-        agent = VerifierAgent(config, chat_model=_mock_chat_model(""))
-        grades = [ReplicationGrade.D, ReplicationGrade.F, ReplicationGrade.F]
-        result = agent._calculate_overall_grade(grades)
-        assert result in (ReplicationGrade.D, ReplicationGrade.F)
-
-    def test_calculate_overall_grade_empty(self, config):
-        agent = VerifierAgent(config, chat_model=_mock_chat_model(""))
-        assert agent._calculate_overall_grade([]) == ReplicationGrade.F
-
-    def test_generate_summary(self, config):
-        agent = VerifierAgent(config, chat_model=_mock_chat_model(""))
-        verifications = [
-            ItemVerification(
-                item_id="Table 1", item_type="table",
-                grade=ReplicationGrade.A, comparison_notes="Perfect match",
-            ),
-            ItemVerification(
-                item_id="Table 2", item_type="table",
-                grade=ReplicationGrade.D, comparison_notes="Major differences found",
-            ),
-        ]
-        summary = agent._generate_summary(verifications, ReplicationGrade.B)
-        assert "Overall replication grade: B" in summary
-        assert "Total items verified: 2" in summary
-        assert "Table 2" in summary
-
-    def test_extract_table_section(self, config):
-        agent = VerifierAgent(config, chat_model=_mock_chat_model(""))
-        text = "Some text\nTable 1 shows the results\nMore detail about Table 1\nOther stuff"
-        section = agent._extract_table_section(text, "Table 1")
-        assert "Table 1" in section
-
-    def test_extract_table_section_not_found(self, config):
-        agent = VerifierAgent(config, chat_model=_mock_chat_model(""))
-        section = agent._extract_table_section("no tables here", "Table 99")
-        assert "not found" in section.lower() or section == ""
-
-    def test_verify_table_failed_execution(self, config, replication_results):
-        agent = VerifierAgent(config, chat_model=_mock_chat_model(""))
-        from src.models.schemas import GeneratedTable
-
-        failed_table = GeneratedTable(
-            table_number="Table 1",
-            data={},
-            code_reference="Table 1",
-            execution_success=False,
-            error_message="ImportError",
-        )
-        result = agent._verify_table(failed_table, "paper text", [])
-        assert result.grade == ReplicationGrade.F
-
-    def test_verify_figure_failed_execution(self, config):
-        agent = VerifierAgent(config, chat_model=_mock_chat_model(""))
-        from src.models.schemas import GeneratedFigure
-
-        failed_fig = GeneratedFigure(
-            figure_number="Figure 1",
-            file_path="/tmp/nonexistent.png",
-            code_reference="Figure 1",
-            execution_success=False,
-            error_message="Error",
-        )
-        result = agent._verify_figure(failed_fig, "paper text", "paper.pdf")
-        assert result.grade == ReplicationGrade.F
-
-    def test_verify_figure_file_not_found(self, config):
-        agent = VerifierAgent(config, chat_model=_mock_chat_model(""))
-        from src.models.schemas import GeneratedFigure
-
-        fig = GeneratedFigure(
-            figure_number="Figure 1",
-            file_path="/tmp/definitely_not_here.png",
-            code_reference="Figure 1",
-            execution_success=True,
-        )
-        result = agent._verify_figure(fig, "paper text", "paper.pdf")
-        assert result.grade == ReplicationGrade.F
-        assert "not found" in result.comparison_notes.lower()
-
-    def test_vision_uses_raw_client(self, config):
-        """Vision methods should use raw API clients, not LangChain."""
-        agent = VerifierAgent(config, chat_model=_mock_chat_model(""))
-        assert agent._vision_provider == "openai"
-        assert agent._vision_client is None  # Lazy initialized
-
-
-# ── ExplainerAgent Tests ─────────────────────────────────────────────────
-
-
-class TestExplainerAgent:
-    def test_init(self, config):
-        agent = ExplainerAgent(config, chat_model=_mock_chat_model(""))
-        assert agent.name == "Explainer"
-
-    def test_load_replication_package_none(self, config):
-        agent = ExplainerAgent(config, chat_model=_mock_chat_model(""))
-        assert agent._load_replication_package(None) is None
-
-    def test_load_replication_package_missing(self, config):
-        agent = ExplainerAgent(config, chat_model=_mock_chat_model(""))
-        assert agent._load_replication_package("/nonexistent/path") is None
-
-    def test_load_replication_package(self, config, tmp_path):
-        agent = ExplainerAgent(config, chat_model=_mock_chat_model(""))
-        # Create some files
-        (tmp_path / "analysis.py").write_text("import pandas as pd\n")
-        (tmp_path / "sub").mkdir()
-        (tmp_path / "sub" / "helper.R").write_text("library(tidyverse)\n")
-
-        package = agent._load_replication_package(str(tmp_path))
-        assert package is not None
-        assert len(package["files"]) == 2
-
-    def test_get_method_summary_found(self, config, paper_summary):
-        agent = ExplainerAgent(config, chat_model=_mock_chat_model(""))
-        result = agent._get_method_summary(paper_summary, "Table 1")
-        assert "Summary Statistics" in result
-
-    def test_get_method_summary_not_found(self, config, paper_summary):
-        agent = ExplainerAgent(config, chat_model=_mock_chat_model(""))
-        result = agent._get_method_summary(paper_summary, "Table 99")
-        assert "not found" in result.lower()
-
-    def test_get_replication_code_found(self, config, replication_results):
-        agent = ExplainerAgent(config, chat_model=_mock_chat_model(""))
-        code = agent._get_replication_code(replication_results, "Table 1")
-        assert "describe" in code
-
-    def test_get_replication_code_not_found(self, config, replication_results):
-        agent = ExplainerAgent(config, chat_model=_mock_chat_model(""))
-        code = agent._get_replication_code(replication_results, "Table 99")
-        assert "not found" in code.lower()
-
-    def test_generate_overall_assessment_no_analyses(self, config):
-        agent = ExplainerAgent(config, chat_model=_mock_chat_model(""))
-        report = VerificationReport(
-            paper_id="test",
-            overall_grade=ReplicationGrade.A,
-            item_verifications=[],
-            summary="All good",
-        )
-        result = agent._generate_overall_assessment([], report)
-        assert "fully successful" in result.lower()
-
-    def test_generate_recommendations_software(self, config):
-        agent = ExplainerAgent(config, chat_model=_mock_chat_model(""))
-        from src.models.schemas import DiscrepancyAnalysis
-
-        analyses = [
-            DiscrepancyAnalysis(
-                item_id="Table 1",
-                grade=ReplicationGrade.C,
-                description_of_discrepancy="Different results",
-                likely_causes=["Different software implementation"],
-                is_identifiable=True,
-                fault_attribution="replicator",
-                confidence="medium",
-            )
-        ]
-        recs = agent._generate_recommendations(analyses)
-        assert any("software" in r.lower() for r in recs)
-
-    def test_generate_recommendations_default(self, config):
-        agent = ExplainerAgent(config, chat_model=_mock_chat_model(""))
-        from src.models.schemas import DiscrepancyAnalysis
-
-        analyses = [
-            DiscrepancyAnalysis(
-                item_id="Table 1",
-                grade=ReplicationGrade.D,
-                description_of_discrepancy="Unknown",
-                likely_causes=["Unknown cause"],
-                is_identifiable=False,
-                fault_attribution="unclear",
-                confidence="low",
-            )
-        ]
-        recs = agent._generate_recommendations(analyses)
-        assert len(recs) > 0
 
 
 # ── ReplicatorAgent Tests ────────────────────────────────────────────────

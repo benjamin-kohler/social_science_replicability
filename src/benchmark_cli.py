@@ -25,7 +25,7 @@ def main():
     parser.add_argument(
         "--approaches",
         nargs="*",
-        choices=["freestyle", "structured"],
+        choices=["freestyle", "structured", "claude-code", "codex"],
         help="Override approaches to run (default: from config)",
     )
     parser.add_argument(
@@ -46,6 +46,12 @@ def main():
         "--timeout",
         type=int,
         help="Override timeout in seconds (default: from config)",
+    )
+    parser.add_argument(
+        "--allow-web-access",
+        action="store_true",
+        default=None,
+        help="Allow models to use web search (default: blocked for information isolation)",
     )
 
     args = parser.parse_args()
@@ -78,6 +84,8 @@ def main():
         config.output_dir = args.output_dir
     if args.timeout:
         config.timeout_seconds = args.timeout
+    if args.allow_web_access is not None:
+        config.allow_web_access = args.allow_web_access
 
     if not config.models:
         logger.error("No models selected. Check --models filter.")

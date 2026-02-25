@@ -1,0 +1,44 @@
+## 4-way benchmark: all approaches on Yellow Vests
+## gpt-5.2-codex (freestyle + structured), opus 4.6 (claude-code), gpt-5.3-codex (codex)
+
+models:
+  - provider: openai
+    model_name: gpt-5.2-codex
+    api_key_env: OPENAI_API_KEY
+    approaches:
+      - freestyle
+      - structured
+
+  - provider: anthropic
+    model_name: claude-opus-4-6
+    api_key_env: ANTHROPIC_API_KEY
+    approaches:
+      - claude-code
+
+  - provider: openai
+    model_name: gpt-5.3-codex
+    api_key_env: OPENAI_API_KEY
+    approaches:
+      - codex
+
+papers:
+  - paper_id: yellow_vests_carbon_tax
+    pdf_path: data/input/yellow_vests_carbon_tax/paper.pdf
+    data_path: data/input/yellow_vests_carbon_tax/data
+    replication_package_path: data/input/yellow_vests_carbon_tax/replication_package
+
+approaches:
+  - freestyle
+  - structured
+  - claude-code
+  - codex
+
+judge:
+  provider: openai
+  model_name: gpt-5.2-codex
+
+output_dir: data/benchmark_results/4way_yellow_vests
+opencode_binary: /Users/bkohler/.opencode/bin/opencode
+claude_code_binary: /Users/bkohler/.local/bin/claude
+codex_binary: /opt/homebrew/bin/codex
+timeout_seconds: 3600

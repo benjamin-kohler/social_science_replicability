@@ -23,6 +23,20 @@ models:
     approaches:
       - freestyle
 
+  ## Claude Code CLI — opus 4.6 via claude -p
+  - provider: anthropic
+    model_name: claude-opus-4-6
+    api_key_env: ANTHROPIC_API_KEY
+    approaches:
+      - claude-code
+
+  ## Codex CLI — gpt-5.3-codex via codex exec
+  - provider: openai
+    model_name: gpt-5.3-codex
+    api_key_env: OPENAI_API_KEY
+    approaches:
+      - codex
+
 papers:
   ## Laouénan & Rathelot (2022) — SKIPPED: 2.2GB .dta file causes all regressions to timeout
   ## TODO: re-enable once execution supports chunked/optimized FE estimation
@@ -48,11 +62,18 @@ papers:
 approaches:
   - freestyle
   - structured
+  - claude-code
+  - codex
 
 judge:
   provider: openai
-  model_name: gpt-5.2-codex
+  model_name: gpt-5.2-mini
 
 output_dir: data/benchmark_results
 opencode_binary: /Users/bkohler/.opencode/bin/opencode
 timeout_seconds: 3600
+
+## Information isolation: block web search by default.
+## Set to true to allow models to use WebSearch/WebFetch during replication.
+## Override per-run with: --allow-web-access
+allow_web_access: false

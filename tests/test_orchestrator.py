@@ -62,12 +62,10 @@ class TestReplicationOrchestrator:
 
     @patch("src.orchestrator.ExtractorAgent")
     @patch("src.orchestrator.ReplicatorAgent")
-    @patch("src.orchestrator.VerifierAgent")
-    @patch("src.orchestrator.ExplainerAgent")
+    @patch("src.orchestrator.Judge")
     def test_run_full_pipeline(
         self,
-        mock_exp,
-        mock_ver,
+        mock_judge_cls,
         mock_rep,
         mock_ext,
         config,
@@ -81,13 +79,13 @@ class TestReplicationOrchestrator:
 
         mock_ext.return_value.run.return_value = paper_summary
         mock_rep.return_value.run.return_value = replication_results
-        mock_ver.return_value.run.return_value = verification_report
-        mock_exp.return_value.run.return_value = ExplanationReport(
+        explanation = ExplanationReport(
             paper_id="test_paper_2024",
             analyses=[],
             overall_assessment="Good replication",
             recommendations=[],
         )
+        mock_judge_cls.return_value.run.return_value = (verification_report, explanation)
 
         orch = ReplicationOrchestrator(config=config)
         state = orch.run(
@@ -105,12 +103,10 @@ class TestReplicationOrchestrator:
 
     @patch("src.orchestrator.ExtractorAgent")
     @patch("src.orchestrator.ReplicatorAgent")
-    @patch("src.orchestrator.VerifierAgent")
-    @patch("src.orchestrator.ExplainerAgent")
+    @patch("src.orchestrator.Judge")
     def test_run_replication_failure_returns_partial(
         self,
-        mock_exp,
-        mock_ver,
+        mock_judge_cls,
         mock_rep,
         mock_ext,
         config,
@@ -137,10 +133,9 @@ class TestReplicationOrchestrator:
 
     @patch("src.orchestrator.ExtractorAgent")
     @patch("src.orchestrator.ReplicatorAgent")
-    @patch("src.orchestrator.VerifierAgent")
-    @patch("src.orchestrator.ExplainerAgent")
+    @patch("src.orchestrator.Judge")
     def test_save_intermediate(
-        self, mock_exp, mock_ver, mock_rep, mock_ext, config, paper_summary, tmp_dir
+        self, mock_judge_cls, mock_rep, mock_ext, config, paper_summary, tmp_dir
     ):
         config.output.save_intermediate_results = True
 
@@ -161,16 +156,12 @@ class TestReplicationOrchestrator:
             data = json.load(f)
         assert data["paper_id"] == "test_paper_2024"
 
-    @patch("src.orchestrator.ExtractorAgent")
     @patch("src.orchestrator.ReplicatorAgent")
-    @patch("src.orchestrator.VerifierAgent")
-    @patch("src.orchestrator.ExplainerAgent")
+    @patch("src.orchestrator.Judge")
     def test_run_from_summary(
         self,
-        mock_exp,
-        mock_ver,
+        mock_judge_cls,
         mock_rep,
-        mock_ext,
         config,
         paper_summary,
         replication_results,
@@ -180,13 +171,13 @@ class TestReplicationOrchestrator:
         config.output.save_intermediate_results = False
 
         mock_rep.return_value.run.return_value = replication_results
-        mock_ver.return_value.run.return_value = verification_report
-        mock_exp.return_value.run.return_value = ExplanationReport(
+        explanation = ExplanationReport(
             paper_id="test_paper_2024",
             analyses=[],
             overall_assessment="Good",
             recommendations=[],
         )
+        mock_judge_cls.return_value.run.return_value = (verification_report, explanation)
 
         orch = ReplicationOrchestrator(config=config)
         state = orch.run_from_summary(
@@ -197,5 +188,3 @@ class TestReplicationOrchestrator:
         )
 
         assert state.current_step == "complete"
-        # Extractor should NOT have been called
-        mock_ext.return_value.run.assert_not_called()

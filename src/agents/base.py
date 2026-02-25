@@ -80,7 +80,8 @@ class BaseAgent(ABC):
         if system_prompt is None:
             system_prompt = f"You are {self.name}, a {self.role}. Your goal is: {self.goal}"
 
-        logger.debug(f"{self.name} generating response...")
+        logger.info(f"{self.name} generating response...")
+        logger.debug(f"[{self.name}] PROMPT:\n{prompt[:2000]}{'...' if len(prompt) > 2000 else ''}")
 
         messages = [
             SystemMessage(content=system_prompt),
@@ -105,6 +106,8 @@ class BaseAgent(ABC):
                 elif hasattr(block, "text") and getattr(block, "type", None) != "reasoning":
                     parts.append(block.text)
             content = "\n".join(parts)
+
+        logger.debug(f"[{self.name}] RESPONSE:\n{content[:2000]}{'...' if len(content) > 2000 else ''}")
         return content
 
     def generate_json(

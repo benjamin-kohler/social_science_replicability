@@ -48,4 +48,11 @@ class BenchmarkConfig(BaseModel):
     judge: JudgeConfig = Field(default_factory=JudgeConfig, description="Judge model config")
     output_dir: str = Field(default="data/benchmark_results", description="Output directory")
     opencode_binary: str = Field(default="opencode", description="Path to opencode binary")
+    claude_code_binary: str = Field(default="claude", description="Path to claude CLI binary")
+    codex_binary: str = Field(default="codex", description="Path to codex CLI binary")
     timeout_seconds: int = Field(default=600, description="Timeout per run in seconds")
+    allow_web_access: bool = Field(
+        default=False,
+        description="Allow models to use web search during replication. "
+        "Default False blocks WebSearch/WebFetch for information isolation.",
+    )

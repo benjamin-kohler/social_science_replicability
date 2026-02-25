@@ -47,6 +47,18 @@ class RegressionSpec(BaseModel):
     sample_restrictions: Optional[str] = Field(
         default=None, description="Any sample restrictions applied"
     )
+    equation_latex: Optional[str] = Field(
+        default=None,
+        description="LaTeX formula for the regression equation, e.g. 'Y_i = \\alpha + \\beta X_i + \\gamma Z_i + \\varepsilon_i'",
+    )
+    variable_definitions: Optional[str] = Field(
+        default=None,
+        description="Verbal definitions of each variable in the equation, e.g. 'Y_i: acceptance of carbon tax (binary); X_i: believes does not lose (binary); Z_i: vector of controls'",
+    )
+    omitted_categories: Optional[dict[str, str]] = Field(
+        default=None,
+        description="Mapping of categorical variable names to their omitted/reference category, e.g. {'Yellow Vests': 'opposes', 'labor_status': 'Unemployed/Inactive'}",
+    )
     additional_notes: Optional[str] = Field(
         default=None, description="Additional specifications or notes"
     )
@@ -63,6 +75,10 @@ class TableSpec(BaseModel):
         default_factory=list, description="Regression specifications for each column"
     )
     notes: Optional[str] = Field(default=None, description="Table notes (excluding results)")
+    data_source: Optional[str] = Field(
+        default=None,
+        description="Data source for this specific table if different from the main dataset (e.g., 'EL 2013 housing survey, N=27,137')",
+    )
     panel_structure: Optional[str] = Field(
         default=None, description="Panel structure if applicable (e.g., Panel A, Panel B)"
     )
@@ -82,12 +98,20 @@ class PlotSpec(BaseModel):
     plot_type: str = Field(
         ..., description="Type of plot: scatter, bar, line, histogram, etc."
     )
-    x_axis: str = Field(..., description="X-axis variable or label")
-    y_axis: str = Field(..., description="Y-axis variable or label")
+    x_axis: Optional[str] = Field(default=None, description="X-axis variable or label")
+    y_axis: Optional[str] = Field(default=None, description="Y-axis variable or label")
     grouping_vars: Optional[list[str]] = Field(
         default=None, description="Variables used for grouping/coloring"
     )
+    regression_specs: list[RegressionSpec] = Field(
+        default_factory=list,
+        description="Regression specifications underlying this figure (e.g., for coefficient plots, RDD plots, binned scatters with fit lines)",
+    )
     notes: Optional[str] = Field(default=None, description="Figure notes")
+    data_source: Optional[str] = Field(
+        default=None,
+        description="Data source for this specific figure if different from the main dataset",
+    )
     subplot_structure: Optional[str] = Field(
         default=None, description="Subplot arrangement if applicable"
     )

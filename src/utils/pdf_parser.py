@@ -1,5 +1,6 @@
 """PDF parsing utilities for extracting text and tables from papers."""
 
+import base64
 import re
 from pathlib import Path
 from typing import Optional
@@ -196,3 +197,39 @@ def extract_table_captions(text: str) -> list[dict]:
         })
 
     return captions
+
+
+def pdf_to_base64_images(pdf_path: str, dpi: int = 200) -> list[dict]:
+    """Convert each page of a PDF to a base64-encoded PNG image.
+
+    Args:
+        pdf_path: Path to the PDF file.
+        dpi: Resolution for rendering (default 200 — good balance of quality vs size).
+
+    Returns:
+        List of dicts with 'page' (1-indexed) and 'base64' (PNG as base64 string).
+    """
+    path = Path(pdf_path)
+    if not path.exists():
+        raise FileNotFoundError(f"PDF file not found: {pdf_path}")
+
+    logger.info(f"Converting PDF to images: {pdf_path} at {dpi} DPI")
+
+    doc = fitz.open(pdf_path)
+    images = []
+    zoom = dpi / 72  # PyMuPDF default is 72 DPI
+    matrix = fitz.Matrix(zoom, zoom)
+
+    for page_num in range(len(doc)):
+        page = doc[page_num]
+        pix = page.get_pixmap(matrix=matrix)
+        png_bytes = pix.tobytes("png")
+        b64 = base64.b64encode(png_bytes).decode("utf-8")
+        images.append({
+            "page": page_num + 1,
+            "base64": b64,
+        })
+
+    doc.close()
+    logger.info(f"Converted {len(images)} pages to images")
+    return images

@@ -1,5 +1,7 @@
 """Structured approach runner using the LangGraph pipeline."""
 
+import io
+import logging
 import os
 import time
 from pathlib import Path
@@ -23,8 +25,9 @@ class StructuredRunner:
     benchmark's SharedEvaluator with the judge model.
     """
 
-    def __init__(self, timeout: int = 600):
+    def __init__(self, timeout: int = 600, allow_web_access: bool = False):
         self.timeout = timeout
+        self.allow_web_access = allow_web_access
 
     def run(
         self,
@@ -60,10 +63,24 @@ class StructuredRunner:
         elif model.provider.lower() == "anthropic":
             config.anthropic_api_key = api_key
 
+        web_status = "ALLOWED" if self.allow_web_access else "BLOCKED"
         logger.info(
-            f"Running structured pipeline: model={model.model_name}, paper={paper.paper_id}"
+            f"Running structured pipeline: model={model.model_name}, "
+            f"paper={paper.paper_id}, web_access={web_status}"
         )
         start = time.time()
+
+        # Capture all log output during the pipeline run
+        log_buffer = io.StringIO()
+        log_handler = logging.StreamHandler(log_buffer)
+        log_handler.setLevel(logging.DEBUG)
+        log_handler.setFormatter(logging.Formatter(
+            "%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+            datefmt="%H:%M:%S",
+        ))
+        # Attach to root logger to capture all modules (agents, orchestrator, executor)
+        root_logger = logging.getLogger()
+        root_logger.addHandler(log_handler)
 
         try:
             orchestrator = ReplicationOrchestrator(config=config)
@@ -82,22 +99,41 @@ class StructuredRunner:
             duration = time.time() - start
             errors = state.errors if state.errors else []
 
-            return RunArtifacts(
-                workspace_dir=str(workspace_dir),
-                stdout=f"Pipeline completed. Step: {state.current_step}",
-                stderr="\n".join(errors),
-                exit_code=0 if not errors else 1,
-                duration_seconds=duration,
-                replication_results=state.replication_results,
-            )
+            stdout = f"Pipeline completed. Step: {state.current_step}"
+            stderr = "\n".join(errors)
+            exit_code = 0 if not errors else 1
 
         except Exception as e:
             duration = time.time() - start
             logger.error(f"Structured pipeline failed: {e}")
-            return RunArtifacts(
-                workspace_dir=str(workspace_dir),
-                stdout="",
-                stderr=str(e),
-                exit_code=1,
-                duration_seconds=duration,
-            )
+            stdout = ""
+            stderr = str(e)
+            exit_code = 1
+            state = None
+
+        finally:
+            root_logger.removeHandler(log_handler)
+            log_handler.close()
+
+        # Save full pipeline log to workspace
+        captured_log = log_buffer.getvalue()
+        log_path = workspace_dir / "run_log.txt"
+        log_path.write_text(
+            f"=== STRUCTURED PIPELINE RUN LOG ===\n"
+            f"Model: {model.provider}/{model.model_name}\n"
+            f"Paper: {paper.paper_id}\n"
+            f"Web access: {web_status}\n"
+            f"Exit code: {exit_code}\n"
+            f"Duration: {duration:.1f}s\n\n"
+            f"=== PIPELINE LOG ===\n{captured_log}\n\n"
+            f"=== ERRORS ===\n{stderr}\n"
+        )
+
+        return RunArtifacts(
+            workspace_dir=str(workspace_dir),
+            stdout=stdout,
+            stderr=stderr,
+            exit_code=exit_code,
+            duration_seconds=duration,
+            replication_results=state.replication_results if state else None,
+        )

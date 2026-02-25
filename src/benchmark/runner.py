@@ -16,6 +16,8 @@ from ..models.schemas import PaperSummary
 from ..utils.logging_utils import get_logger
 from .config import BenchmarkConfig, ModelSpec, PaperSpec
 from .evaluator import SharedEvaluator
+from .claude_code_runner import ClaudeCodeRunner
+from .codex_runner import CodexRunner
 from .opencode_runner import OpencodeRunner
 from .structured_runner import StructuredRunner
 from .results import (
@@ -43,8 +45,22 @@ class BenchmarkRunner:
         self.opencode_runner = OpencodeRunner(
             opencode_binary=config.opencode_binary,
             timeout=config.timeout_seconds,
+            allow_web_access=config.allow_web_access,
         )
-        self.structured_runner = StructuredRunner(timeout=config.timeout_seconds)
+        self.structured_runner = StructuredRunner(
+            timeout=config.timeout_seconds,
+            allow_web_access=config.allow_web_access,
+        )
+        self.claude_code_runner = ClaudeCodeRunner(
+            claude_binary=config.claude_code_binary,
+            timeout=config.timeout_seconds,
+            allow_web_access=config.allow_web_access,
+        )
+        self.codex_runner = CodexRunner(
+            codex_binary=config.codex_binary,
+            timeout=config.timeout_seconds,
+            allow_web_access=config.allow_web_access,
+        )
         self.output_dir = Path(config.output_dir)
         self._summary_cache: dict[str, PaperSummary] = {}
 
@@ -79,20 +95,22 @@ class BenchmarkRunner:
         elif judge.provider.lower() == "anthropic":
             config.anthropic_api_key = os.environ.get("ANTHROPIC_API_KEY", "")
 
-        extractor = ExtractorAgent(config)
-        summary = extractor.run(
+        extractor = ExtractorAgent(config, model=judge.model_name)
+        summary, usage = extractor.run(
             paper_path=paper.pdf_path,
             paper_id=paper.paper_id,
         )
 
         self._summary_cache[paper.paper_id] = summary
 
-        # Save the summary for inspection
+        # Save the summary and usage for inspection
         import json
         summary_dir = self.output_dir / "summaries"
         summary_dir.mkdir(parents=True, exist_ok=True)
         with open(summary_dir / f"{paper.paper_id}_summary.json", "w") as f:
             json.dump(summary.model_dump(), f, indent=2, default=str)
+        with open(summary_dir / f"{paper.paper_id}_usage.json", "w") as f:
+            json.dump(usage.summary_dict(), f, indent=2)
 
         logger.info(
             f"Extracted summary for {paper.paper_id}: "
@@ -162,7 +180,7 @@ class BenchmarkRunner:
         Args:
             model: Model specification.
             paper: Paper specification.
-            approach: 'freestyle' or 'structured'.
+            approach: 'freestyle', 'structured', 'claude-code', or 'codex'.
 
         Returns:
             SingleRunResult with artifacts and evaluation.
@@ -175,6 +193,10 @@ class BenchmarkRunner:
             artifacts = self.opencode_runner.run(model, paper, paper_summary, workspace)
         elif approach == "structured":
             artifacts = self.structured_runner.run(model, paper, paper_summary, workspace)
+        elif approach == "claude-code":
+            artifacts = self.claude_code_runner.run(model, paper, paper_summary, workspace)
+        elif approach == "codex":
+            artifacts = self.codex_runner.run(model, paper, paper_summary, workspace)
         else:
             raise ValueError(f"Unknown approach: {approach}")
 

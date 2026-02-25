@@ -1,6 +1,7 @@
-"""Parse freestyle (opencode) workspace output into structured ReplicationResults."""
+"""Parse workspace output into structured ReplicationResults."""
 
 import json
+import re
 from pathlib import Path
 
 from ..models.schemas import (
@@ -19,23 +20,15 @@ FIGURE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".pdf", ".svg"}
 
 
 class ArtifactParser:
-    """Parses a freestyle workspace into ReplicationResults.
+    """Parses a workspace into ReplicationResults.
 
-    Scans the workspace directory for generated code, tables, and figures
-    using filename heuristics to match them to paper items.
+    Scans the workspace directory for generated code, tables, and figures.
+    Filenames follow the controlled convention: table_2.1.csv, figure_3.1.png.
     """
 
     @staticmethod
     def parse(workspace_dir: Path, paper_id: str) -> ReplicationResults:
-        """Parse workspace files into ReplicationResults.
-
-        Args:
-            workspace_dir: Directory containing freestyle run output.
-            paper_id: Paper identifier.
-
-        Returns:
-            ReplicationResults with discovered artifacts.
-        """
+        """Parse workspace files into ReplicationResults."""
         code_files = []
         tables = []
         figures = []
@@ -44,10 +37,6 @@ class ArtifactParser:
             logger.warning(f"Workspace directory does not exist: {workspace_dir}")
             return ReplicationResults(paper_id=paper_id)
 
-        # Load number maps from methodology_summary.json if available
-        table_number_map, figure_number_map = _load_number_maps(workspace_dir)
-
-        # Scan for code files
         order = 0
         for path in sorted(workspace_dir.rglob("*")):
             if not path.is_file():
@@ -66,9 +55,9 @@ class ArtifactParser:
                 )
                 order += 1
 
-            elif suffix in TABLE_EXTENSIONS:
+            elif suffix in TABLE_EXTENSIONS and _is_table_file(path.stem):
                 data = _load_table_data(path)
-                table_number = _infer_item_number(path.stem, "Table", table_number_map)
+                table_number = _infer_item_number(path.stem, "Table")
                 tables.append(
                     GeneratedTable(
                         table_number=table_number,
@@ -79,8 +68,8 @@ class ArtifactParser:
                     )
                 )
 
-            elif suffix in FIGURE_EXTENSIONS:
-                figure_number = _infer_item_number(path.stem, "Figure", figure_number_map)
+            elif suffix in FIGURE_EXTENSIONS and _is_figure_file(path.stem):
+                figure_number = _infer_item_number(path.stem, "Figure")
                 figures.append(
                     GeneratedFigure(
                         figure_number=figure_number,
@@ -104,6 +93,16 @@ class ArtifactParser:
         )
 
 
+def _is_table_file(stem: str) -> bool:
+    """Check if a filename stem looks like a table output."""
+    return bool(re.match(r"table[_\-\s]?\w", stem, re.IGNORECASE))
+
+
+def _is_figure_file(stem: str) -> bool:
+    """Check if a filename stem looks like a figure output."""
+    return bool(re.match(r"(figure|fig)[_\-\s]?\w", stem, re.IGNORECASE))
+
+
 def _load_table_data(path: Path) -> dict:
     """Load table data from a CSV or JSON file."""
     try:
@@ -119,81 +118,25 @@ def _load_table_data(path: Path) -> dict:
     return {"raw": path.read_text(errors="replace")[:5000]}
 
 
-def _load_number_maps(workspace_dir: Path) -> tuple[dict[str, str], dict[str, str]]:
-    """Load table/figure number maps from methodology_summary.json.
+def _infer_item_number(stem: str, default_prefix: str) -> str:
+    """Infer an item number from a controlled filename stem.
 
-    Builds maps from sequential position ("1", "2", ...) to paper numbering
-    ("Table 2.1", "Table 2.2", ...) by reading the tables/figures arrays.
-
-    Returns:
-        Tuple of (table_number_map, figure_number_map).
+    Filenames follow the convention: table_2.1, figure_3.1, table_a.1, etc.
     """
-    table_map: dict[str, str] = {}
-    figure_map: dict[str, str] = {}
-
-    summary_path = workspace_dir / "methodology_summary.json"
-    if not summary_path.exists():
-        return table_map, figure_map
-
-    try:
-        summary = json.loads(summary_path.read_text())
-
-        for i, table in enumerate(summary.get("tables", []), start=1):
-            paper_num = table.get("table_number", f"Table {i}")
-            table_map[str(i)] = paper_num
-
-        for i, figure in enumerate(summary.get("figures", []), start=1):
-            paper_num = figure.get("figure_number", f"Figure {i}")
-            figure_map[str(i)] = paper_num
-
-        if table_map or figure_map:
-            logger.info(
-                f"Loaded number maps: {len(table_map)} tables, {len(figure_map)} figures"
-            )
-    except Exception as e:
-        logger.warning(f"Could not load number maps from {summary_path}: {e}")
-
-    return table_map, figure_map
-
-
-def _infer_item_number(
-    stem: str, default_prefix: str, number_map: dict[str, str] | None = None
-) -> str:
-    """Infer an item number (e.g., 'Table 2.1') from a filename stem.
-
-    Heuristics (in priority order):
-    1. Dotted paper numbering in filename: table_2.1 -> 'Table 2.1'
-    2. Sequential number with number_map lookup: table_1 -> number_map["1"]
-    3. Sequential number without map: table_1 -> 'Table 1'
-    4. Fallback: use filename
-    """
-    import re
-
     stem_lower = stem.lower()
 
-    # 1. Check for dotted numbering (e.g., table_2.1, table_3.2)
-    table_dotted = re.search(r"table[_\-\s]?(\d+\.\d+)", stem_lower)
-    if table_dotted:
-        return f"Table {table_dotted.group(1)}"
+    # Dotted or letter-prefixed numbering: table_2.1, table_a.1, figure_3.2
+    dotted = re.search(
+        r"(?:table|figure|fig)[_\-\s]?([a-z]?\d*\.?\d+)", stem_lower
+    )
+    if dotted:
+        prefix = "Table" if "table" in stem_lower else "Figure"
+        return f"{prefix} {dotted.group(1).upper()}"
 
-    figure_dotted = re.search(r"(?:figure|fig)[_\-\s]?(\d+\.\d+)", stem_lower)
-    if figure_dotted:
-        return f"Figure {figure_dotted.group(1)}"
+    # Plain number: table_1, figure_2
+    plain = re.search(r"(?:table|figure|fig)[_\-\s]?(\d+)", stem_lower)
+    if plain:
+        prefix = "Table" if "table" in stem_lower else "Figure"
+        return f"{prefix} {plain.group(1)}"
 
-    # 2. Match sequential patterns like table_1, table1, table-1
-    table_match = re.search(r"table[_\-\s]?(\d+)", stem_lower)
-    if table_match:
-        seq_num = table_match.group(1)
-        if number_map and seq_num in number_map:
-            return number_map[seq_num]
-        return f"Table {seq_num}"
-
-    figure_match = re.search(r"(?:figure|fig)[_\-\s]?(\d+)", stem_lower)
-    if figure_match:
-        seq_num = figure_match.group(1)
-        if number_map and seq_num in number_map:
-            return number_map[seq_num]
-        return f"Figure {seq_num}"
-
-    # 3. Fallback: use filename
     return f"{default_prefix} ({stem})"
