@@ -320,17 +320,17 @@ class Judge:
                     — media_type defaults to 'image/png'.
         """
         if self.provider == "openai":
-            input_parts: list[dict] = [{"type": "input_text", "text": prompt}]
+            content_parts: list[dict] = [{"type": "input_text", "text": prompt}]
             for img in images:
                 media = img.get("media_type", "image/png")
-                input_parts.append({
+                content_parts.append({
                     "type": "input_image",
                     "image_url": f"data:{media};base64,{img['base64']}",
                 })
             kwargs: dict[str, Any] = {
                 "model": self.model,
                 "instructions": system,
-                "input": input_parts,
+                "input": [{"type": "message", "role": "user", "content": content_parts}],
             }
             if not self._is_reasoning:
                 kwargs["temperature"] = 0.0
@@ -380,13 +380,13 @@ class Judge:
         kwargs: dict[str, Any] = {
             "model": self.model,
             "instructions": system,
-            "input": [
+            "input": [{"type": "message", "role": "user", "content": [
                 {"type": "input_text", "text": prompt},
                 {
                     "type": "input_image",
                     "image_url": f"data:{media_type};base64,{image_b64}",
                 },
-            ],
+            ]}],
             "text_format": response_model,
         }
         if not self._is_reasoning:
@@ -400,17 +400,17 @@ class Judge:
         response_model: type,
     ) -> BaseModel:
         """Make an OpenAI vision + structured-output call with multiple images."""
-        input_parts: list[dict] = [{"type": "input_text", "text": prompt}]
+        content_parts: list[dict] = [{"type": "input_text", "text": prompt}]
         for img in images:
             media = img.get("media_type", "image/png")
-            input_parts.append({
+            content_parts.append({
                 "type": "input_image",
                 "image_url": f"data:{media};base64,{img['base64']}",
             })
         kwargs: dict[str, Any] = {
             "model": self.model,
             "instructions": system,
-            "input": input_parts,
+            "input": [{"type": "message", "role": "user", "content": content_parts}],
             "text_format": response_model,
         }
         if not self._is_reasoning:
