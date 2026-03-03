@@ -89,6 +89,41 @@ class TestBaseAgent:
         with pytest.raises(ValueError, match="No JSON found"):
             agent.generate_json("give me json")
 
+    def test_usage_tracking(self, config):
+        """generate() records token usage from AIMessage.usage_metadata."""
+        mock_model = MagicMock()
+        mock_model.invoke.return_value = AIMessage(
+            content="response",
+            usage_metadata={"input_tokens": 100, "output_tokens": 50, "total_tokens": 150},
+        )
+        agent = ConcreteAgent(
+            config=config, name="Test", role="tester", goal="test",
+            chat_model=mock_model,
+        )
+
+        agent.generate("prompt 1")
+        agent.generate("prompt 2")
+
+        usage = agent.usage_summary
+        assert usage["num_calls"] == 2
+        assert usage["prompt_tokens"] == 200
+        assert usage["completion_tokens"] == 100
+        assert usage["total_tokens"] == 300
+        assert len(usage["per_call"]) == 2
+
+    def test_usage_tracking_no_metadata(self, config):
+        """When AIMessage has no usage_metadata, usage_summary is empty."""
+        mock_model = _mock_chat_model("response")
+        agent = ConcreteAgent(
+            config=config, name="Test", role="tester", goal="test",
+            chat_model=mock_model,
+        )
+
+        agent.generate("prompt")
+        usage = agent.usage_summary
+        assert usage["num_calls"] == 0
+        assert usage["total_tokens"] == 0
+
 
 # ── ExtractorAgent Tests ─────────────────────────────────────────────────
 
@@ -98,7 +133,7 @@ class TestExtractorAgent:
     def test_init(self, mock_openai, config):
         agent = ExtractorAgent(config)
         assert agent.model == "gpt-5.2"
-        assert agent.use_vision is False
+        assert agent.use_vision is True
 
     @patch("src.agents.extractor.OpenAI")
     def test_validate_no_results_warns_on_pvalues(self, mock_openai, config):
@@ -171,10 +206,13 @@ class TestReplicatorAgent:
             assert "rpy2" in result["error"].lower() or "error" in result["error"].lower()
 
     def test_capture_data_schema(self, config):
-        """_capture_data_schema stores dtypes, shape, and head output."""
+        """_capture_data_schema discovers DataFrames and stores their schemas."""
         agent = ReplicatorAgent(config, chat_model=_mock_chat_model(""))
         mock_executor = MagicMock()
         mock_executor.execute.side_effect = [
+            # Discovery call
+            {"success": True, "output": "df\n"},
+            # df.shape, df.dtypes, df.head(3)
             {"success": True, "output": "(100, 5)\n"},
             {"success": True, "output": "col_a    int64\ncol_b    float64\n"},
             {"success": True, "output": "   col_a  col_b\n0      1    2.0\n"},
@@ -185,15 +223,19 @@ class TestReplicatorAgent:
         assert "(100, 5)" in agent._data_schema_info
         assert "col_a" in agent._data_schema_info
         assert "col_b" in agent._data_schema_info
-        assert mock_executor.execute.call_count == 3
+        assert agent._dataframe_names == ["df"]
+        assert mock_executor.execute.call_count == 4
 
     def test_capture_data_schema_truncates_wide(self, config):
-        """Wide DataFrames (>80 columns) get truncated."""
+        """Wide DataFrames (>40 columns) get truncated."""
         agent = ReplicatorAgent(config, chat_model=_mock_chat_model(""))
         mock_executor = MagicMock()
         # Generate 100 column lines
         many_cols = "\n".join(f"col_{i}    int64" for i in range(100))
         mock_executor.execute.side_effect = [
+            # Discovery call
+            {"success": True, "output": "df\n"},
+            # df.shape, df.dtypes, df.head(3)
             {"success": True, "output": "(100, 100)\n"},
             {"success": True, "output": many_cols + "\n"},
             {"success": True, "output": "sample\n"},
@@ -201,7 +243,33 @@ class TestReplicatorAgent:
         agent.executor = mock_executor
         agent._capture_data_schema()
 
-        assert "20 more columns" in agent._data_schema_info
+        assert "60 more columns" in agent._data_schema_info
+
+    def test_capture_data_schema_multiple(self, config):
+        """_capture_data_schema discovers and captures schemas for multiple DataFrames."""
+        agent = ReplicatorAgent(config, chat_model=_mock_chat_model(""))
+        mock_executor = MagicMock()
+        mock_executor.execute.side_effect = [
+            # Discovery call
+            {"success": True, "output": "df_country|df_county\n"},
+            # df_country: shape, dtypes, head
+            {"success": True, "output": "(500, 10)\n"},
+            {"success": True, "output": "country    object\ngdp    float64\n"},
+            {"success": True, "output": "  country  gdp\n0  USA     50000\n"},
+            # df_county: shape, dtypes, head
+            {"success": True, "output": "(2000, 8)\n"},
+            {"success": True, "output": "county    object\npop    int64\n"},
+            {"success": True, "output": "  county  pop\n0  Cook   5000000\n"},
+        ]
+        agent.executor = mock_executor
+        agent._capture_data_schema()
+
+        assert "df_country" in agent._data_schema_info
+        assert "df_county" in agent._data_schema_info
+        assert "(500, 10)" in agent._data_schema_info
+        assert "(2000, 8)" in agent._data_schema_info
+        assert agent._dataframe_names == ["df_country", "df_county"]
+        assert mock_executor.execute.call_count == 7
 
     def test_strip_ansi(self, config):
         """_strip_ansi removes ANSI escape codes."""

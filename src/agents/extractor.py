@@ -334,11 +334,11 @@ Carefully read the paper and extract all methodological information.
 - For every `regression_spec`, you MUST fill in `equation_latex` and `variable_definitions`.
 - `equation_latex`: Copy the exact equation from the paper in LaTeX. If the paper writes
   "equation (3): A_i^T = α + β Ḡ_i^T + f(I₁,I₂) + cᵢ + εᵢ", write it as:
-  `A_i^T = \\alpha + \\beta \\bar{G}_i^T + f(I_{1,i}, I_{2,i}) + c_i + \\varepsilon_i`
+  `A_i^T = \\alpha + \\beta \\bar{{G}}_i^T + f(I_{{1,i}}, I_{{2,i}}) + c_i + \\varepsilon_i`
   If the paper does not state an explicit equation but describes the model in prose,
   write the equation yourself in standard econometric LaTeX notation.
 - `variable_definitions`: Define every symbol in the equation verbally, separated by semicolons.
-  Example: `A_i^T: acceptance of targeted tax (1 if not "No"); \\bar{G}_i^T: believes does not
+  Example: `A_i^T: acceptance of targeted tax (1 if not "No"); \\bar{{G}}_i^T: believes does not
   lose under targeted reform (binary, endogenous); c_i: threshold fixed effects`
 
 ### Figure extraction rules:
@@ -512,7 +512,7 @@ class ExtractorAgent:
         config: Config,
         model: str = "gpt-5.2",
         max_tokens: int = 128000,
-        use_vision: bool = False,
+        use_vision: bool = True,
         vision_dpi: int = 200,
     ):
         self.config = config
@@ -577,10 +577,15 @@ class ExtractorAgent:
                 page_images,
             )
         else:
+            # Escape curly braces in paper text to prevent str.format() errors
+            # (PDF text may contain literal braces, e.g., in equations like {G})
+            safe_paper_text = paper_text[:200000].replace("{", "{{").replace("}", "}}")
+            safe_table_captions = table_captions_str.replace("{", "{{").replace("}", "}}")
+            safe_figure_captions = figure_captions_str.replace("{", "{{").replace("}", "}}")
             user_prompt = EXTRACTION_USER_PROMPT.format(
-                paper_text=paper_text[:200000],
-                table_captions=table_captions_str,
-                figure_captions=figure_captions_str,
+                paper_text=safe_paper_text,
+                table_captions=safe_table_captions,
+                figure_captions=safe_figure_captions,
             )
             input_content = user_prompt
 
@@ -713,14 +718,21 @@ Carefully read the paper and extract all methodological information.
             step_label: Label for usage tracking (e.g. "extraction", "templates").
         """
         t0 = time.time()
-        response = self.client.responses.parse(
+        # Reasoning models (o3*, o4*, gpt-5-mini, gpt-5-nano, etc.) don't support temperature
+        is_reasoning = any(
+            self.model.startswith(p)
+            for p in ("o3", "o4", "gpt-5-mini", "gpt-5-nano", "gpt-5-pro")
+        )
+        kwargs = dict(
             model=self.model,
             instructions=system_prompt,
             input=input_content,
             max_output_tokens=self.max_tokens,
-            temperature=0.1,
             text_format=response_model,
         )
+        if not is_reasoning:
+            kwargs["temperature"] = 0.1
+        response = self.client.responses.parse(**kwargs)
         duration = time.time() - t0
 
         # Track usage
@@ -838,10 +850,13 @@ Carefully read the paper and extract all methodological information.
             )
             input_content = self._build_vision_input(text_part, page_images)
         else:
+            safe_paper_text = paper_text[:200000].replace("{", "{{").replace("}", "}}")
+            safe_table_specs = table_specs_json.replace("{", "{{").replace("}", "}}")
+            safe_figure_specs = figure_specs_json.replace("{", "{{").replace("}", "}}")
             input_content = TEMPLATE_GENERATION_USER_PROMPT.format(
-                paper_text=paper_text[:200000],
-                table_specs_json=table_specs_json,
-                figure_specs_json=figure_specs_json,
+                paper_text=safe_paper_text,
+                table_specs_json=safe_table_specs,
+                figure_specs_json=safe_figure_specs,
             )
 
         try:

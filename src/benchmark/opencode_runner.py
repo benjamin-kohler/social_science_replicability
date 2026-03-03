@@ -1,5 +1,6 @@
 """Freestyle approach runner using opencode."""
 
+import json as json_mod
 import os
 import subprocess
 import time
@@ -52,7 +53,25 @@ class OpencodeRunner:
         """
         setup_workspace(paper, paper_summary, workspace_dir)
 
-        # Run opencode
+        # Build the inline prompt — action-oriented to minimize wasted turns.
+        # The model's apply_patch can fail and kill the session, so every turn
+        # must count. TASK.md already has detailed variable names and data
+        # descriptions — no need for extensive exploration.
+        prompt_text = (
+            "Read TASK.md for your full instructions and constraints. "
+            "IMPORTANT: Only access files inside this workspace directory. "
+            "Do NOT read files outside this directory or search for the paper or its results.\n\n"
+            "EFFICIENCY IS CRITICAL — you have a limited number of turns. "
+            "Do NOT spend many turns exploring data. TASK.md already describes the variables "
+            "and column names in detail. Instead:\n"
+            "1. Run ONE quick bash command to check actual column names in the data files.\n"
+            "2. Write prepare_data.py (shared data loading module).\n"
+            "3. Write and execute each table/figure script ONE AT A TIME.\n"
+            "4. Fix any errors immediately.\n\n"
+            "Write code IMMEDIATELY after a brief data check. "
+            "Use the EXACT output filenames specified in TASK.md for each item."
+        )
+
         web_status = "ALLOWED" if self.allow_web_access else "BLOCKED"
         logger.info(
             f"Running opencode freestyle: model={model.model_name}, "
@@ -68,17 +87,13 @@ class OpencodeRunner:
                 [
                     self.opencode_binary, "run",
                     "--print-logs",
+                    "--log-level", "DEBUG",
+                    "--format", "json",
                     "-m", model_id,
                     "--dir", abs_workspace,
                     "-f", "TASK.md",
                     "--",
-                    "Read TASK.md for your full instructions and constraints. "
-                    "IMPORTANT: Only access files inside this workspace directory. "
-                    "Do NOT read files outside this directory or search for the paper or its results. "
-                    "First explore the data files in data/ to learn the actual "
-                    "column names. Then write Python scripts to replicate each table and figure. "
-                    "You MUST execute the scripts with bash and fix any errors until they run "
-                    "successfully. Use the exact output filenames specified in TASK.md for each item.",
+                    prompt_text,
                 ],
                 capture_output=True,
                 text=True,
@@ -105,7 +120,11 @@ class OpencodeRunner:
             f"Opencode finished: exit_code={exit_code}, duration={duration:.1f}s"
         )
 
-        # Save full CLI logs (including tool use steps) to workspace
+        # Save raw JSONL output and parsed human-readable log
+        log_jsonl_path = workspace_dir / "run_log.jsonl"
+        log_jsonl_path.write_text(stdout)
+
+        readable_log, usage = self._parse_jsonl_output(stdout)
         log_path = workspace_dir / "run_log.txt"
         log_path.write_text(
             f"=== OPENCODE RUN LOG ===\n"
@@ -114,9 +133,17 @@ class OpencodeRunner:
             f"Web access: {web_status}\n"
             f"Exit code: {exit_code}\n"
             f"Duration: {duration:.1f}s\n\n"
-            f"=== STDOUT ===\n{stdout}\n\n"
+            f"=== CONVERSATION ===\n{readable_log}\n\n"
             f"=== STDERR ===\n{stderr}\n"
         )
+
+        if usage:
+            usage_path = workspace_dir.parent / "usage.json"
+            usage_path.write_text(json_mod.dumps(usage, indent=2))
+            logger.info(
+                f"Token usage: {usage.get('total_tokens', 0):,} total, "
+                f"{usage.get('num_steps', 0)} steps"
+            )
 
         return RunArtifacts(
             workspace_dir=str(workspace_dir),
@@ -124,4 +151,80 @@ class OpencodeRunner:
             stderr=stderr,
             exit_code=exit_code,
             duration_seconds=duration,
+            usage=usage,
         )
+
+    @staticmethod
+    def _parse_jsonl_output(stdout: str) -> tuple[str, dict | None]:
+        """Parse JSONL events from opencode --format json output.
+
+        Returns a human-readable log string and aggregated usage dict.
+        """
+        parts = []
+        total_input = 0
+        total_output = 0
+        num_steps = 0
+        tool_calls: list[str] = []
+
+        for line in stdout.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                event = json_mod.loads(line)
+            except json_mod.JSONDecodeError:
+                parts.append(f"[raw] {line[:500]}")
+                continue
+
+            etype = event.get("type", "")
+
+            if etype == "text":
+                text = event.get("content", "")
+                if text.strip():
+                    parts.append(f"[assistant] {text[:2000]}")
+
+            elif etype == "tool_call":
+                name = event.get("name", "?")
+                tool_calls.append(name)
+                args = event.get("arguments", event.get("input", ""))
+                if isinstance(args, dict):
+                    args = json_mod.dumps(args)
+                parts.append(f"[tool_call] {name}({str(args)[:500]})")
+
+            elif etype == "tool_result":
+                output = str(event.get("content", event.get("output", "")))
+                parts.append(f"[tool_result] {output[:1000]}")
+
+            elif etype == "step":
+                num_steps += 1
+                step_usage = event.get("usage", {})
+                inp = step_usage.get("input_tokens", 0)
+                out = step_usage.get("output_tokens", 0)
+                total_input += inp
+                total_output += out
+                parts.append(f"[step {num_steps}] tokens: in={inp}, out={out}")
+
+            elif etype == "summary" or etype == "done":
+                usage_data = event.get("usage", {})
+                if usage_data:
+                    total_input = usage_data.get("input_tokens", total_input)
+                    total_output = usage_data.get("output_tokens", total_output)
+                parts.append(f"[{etype}] {json_mod.dumps(event)[:500]}")
+
+            elif etype == "error":
+                parts.append(f"[error] {event.get('message', str(event))}")
+
+        readable = "\n".join(parts)
+
+        if num_steps > 0 or total_input > 0:
+            usage_dict: dict | None = {
+                "prompt_tokens": total_input,
+                "completion_tokens": total_output,
+                "total_tokens": total_input + total_output,
+                "num_steps": num_steps,
+                "tool_calls": tool_calls,
+            }
+        else:
+            usage_dict = None
+
+        return readable, usage_dict

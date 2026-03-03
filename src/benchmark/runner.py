@@ -20,6 +20,7 @@ from .claude_code_runner import ClaudeCodeRunner
 from .codex_runner import CodexRunner
 from .opencode_runner import OpencodeRunner
 from .structured_runner import StructuredRunner
+from .swe_agent_runner import SweAgentRunner
 from .results import (
     BenchmarkResults,
     ResultsAggregator,
@@ -61,6 +62,10 @@ class BenchmarkRunner:
             timeout=config.timeout_seconds,
             allow_web_access=config.allow_web_access,
         )
+        self.swe_agent_runner = SweAgentRunner(
+            timeout=config.timeout_seconds,
+            allow_web_access=config.allow_web_access,
+        )
         self.output_dir = Path(config.output_dir)
         self._summary_cache: dict[str, PaperSummary] = {}
 
@@ -95,7 +100,14 @@ class BenchmarkRunner:
         elif judge.provider.lower() == "anthropic":
             config.anthropic_api_key = os.environ.get("ANTHROPIC_API_KEY", "")
 
-        extractor = ExtractorAgent(config, model=judge.model_name)
+        ext = self.config.extractor
+        extractor = ExtractorAgent(
+            config,
+            model=ext.model,
+            max_tokens=ext.max_tokens,
+            use_vision=ext.use_vision,
+            vision_dpi=ext.vision_dpi,
+        )
         summary, usage = extractor.run(
             paper_path=paper.pdf_path,
             paper_id=paper.paper_id,
@@ -197,6 +209,8 @@ class BenchmarkRunner:
             artifacts = self.claude_code_runner.run(model, paper, paper_summary, workspace)
         elif approach == "codex":
             artifacts = self.codex_runner.run(model, paper, paper_summary, workspace)
+        elif approach == "swe-agent":
+            artifacts = self.swe_agent_runner.run(model, paper, paper_summary, workspace)
         else:
             raise ValueError(f"Unknown approach: {approach}")
 

@@ -264,6 +264,15 @@ class ItemVerification(BaseModel):
     key_findings_match: Optional[bool] = Field(
         default=None, description="Whether key findings/conclusions match"
     )
+    judge_error: bool = Field(
+        default=False,
+        description="True when grade F was assigned due to a judge/LLM error, not a replication failure",
+    )
+    unverifiable: bool = Field(
+        default=False,
+        description="True when no output was produced to verify (execution failure, missing file). "
+                    "Excluded from overall grade calculation.",
+    )
 
 
 class VerificationReport(BaseModel):

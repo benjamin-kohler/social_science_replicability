@@ -1,6 +1,7 @@
 """Structured approach runner using the LangGraph pipeline."""
 
 import io
+import json as json_mod
 import logging
 import os
 import time
@@ -84,15 +85,13 @@ class StructuredRunner:
 
         try:
             orchestrator = ReplicationOrchestrator(config=config)
-            # Use run_from_summary: replicator only sees methodology summary + data.
-            # No paper PDF, no replication package passed to the replication step.
-            # Resolve to absolute paths so they work from the workspace directory.
+            # Use run_replicate_only: replicator only sees methodology summary + data.
+            # No paper PDF, no replication package, no judge step — judging is
+            # handled separately by the benchmark's SharedEvaluator after all runs.
             abs_data_path = str(Path(paper.data_path).resolve())
-            abs_paper_path = str(Path(paper.pdf_path).resolve())
-            state = orchestrator.run_from_summary(
+            state = orchestrator.run_replicate_only(
                 paper_summary=paper_summary,
                 data_path=abs_data_path,
-                paper_path=abs_paper_path,
                 output_dir=str(workspace_dir),
             )
 
@@ -129,6 +128,22 @@ class StructuredRunner:
             f"=== ERRORS ===\n{stderr}\n"
         )
 
+        # Read replicator token usage saved by the replication node
+        usage = None
+        replicator_usage_path = workspace_dir / "replicator_usage.json"
+        if replicator_usage_path.exists():
+            try:
+                usage = json_mod.loads(replicator_usage_path.read_text())
+                # Copy to parent dir for consistency with other runners
+                parent_usage = workspace_dir.parent / "usage.json"
+                parent_usage.write_text(json_mod.dumps(usage, indent=2))
+                logger.info(
+                    f"Replicator usage: {usage.get('num_calls', 0)} calls, "
+                    f"{usage.get('total_tokens', 0):,} total tokens"
+                )
+            except Exception as e:
+                logger.warning(f"Could not read replicator usage: {e}")
+
         return RunArtifacts(
             workspace_dir=str(workspace_dir),
             stdout=stdout,
@@ -136,4 +151,5 @@ class StructuredRunner:
             exit_code=exit_code,
             duration_seconds=duration,
             replication_results=state.replication_results if state else None,
+            usage=usage,
         )

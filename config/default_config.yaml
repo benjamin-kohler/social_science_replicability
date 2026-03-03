@@ -10,6 +10,10 @@ execution:
   sandbox_type: "jupyter"
 
 extraction:
+  model: "gpt-5.2"
+  max_tokens: 128000
+  use_vision: true
+  vision_dpi: 200
   focus_sections:
     - "Methods"
     - "Results"

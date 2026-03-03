@@ -316,6 +316,7 @@ def run(sb, output_dir: Path, max_pages: int | None, start_page: int,
     progress_path = output_dir / f"progress_w{worker_id}.json"
     progress = load_progress(progress_path)
     downloaded_ids = set(progress["downloaded"].keys())
+    failed_ids = set(progress["failed"])
 
     # Also check other workers' progress files and existing zips
     if resume:
@@ -324,12 +325,16 @@ def run(sb, output_dir: Path, max_pages: int | None, start_page: int,
                 continue
             other = load_progress(pf)
             downloaded_ids.update(other["downloaded"].keys())
+            failed_ids.update(other["failed"])
+        # Don't skip projects that were later downloaded by another worker
+        failed_ids -= downloaded_ids
 
     terms_accepted = False
     page = start_page
     total_downloaded = len(downloaded_ids)
     consecutive_errors = 0
     consecutive_dl_failures = 0  # track session health
+    consecutive_empty_pages = 0  # require 2+ empty pages to declare end
 
     logger.info("Starting from page %d (%d already downloaded)", page + 1, total_downloaded)
 
@@ -361,14 +366,23 @@ def run(sb, output_dir: Path, max_pages: int | None, start_page: int,
         consecutive_errors = 0
 
         if not projects:
-            logger.info("No projects on page %d — end of results", page + 1)
-            break
+            consecutive_empty_pages += 1
+            if consecutive_empty_pages >= 2:
+                logger.info("No projects on page %d (%d consecutive empty pages) — end of results", page + 1, consecutive_empty_pages)
+                break
+            else:
+                logger.warning("No projects on page %d — possibly a glitch, retrying next page", page + 1)
+                page += 1
+                time.sleep(5)
+                continue
+
+        consecutive_empty_pages = 0
 
         # --- Download each project from this page ---
         for proj in projects:
             pid = proj["project_id"]
 
-            if resume and pid in downloaded_ids:
+            if resume and (pid in downloaded_ids or pid in failed_ids):
                 continue
 
             # Accept terms on the very first download

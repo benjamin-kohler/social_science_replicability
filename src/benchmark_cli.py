@@ -25,7 +25,7 @@ def main():
     parser.add_argument(
         "--approaches",
         nargs="*",
-        choices=["freestyle", "structured", "claude-code", "codex"],
+        choices=["freestyle", "structured", "claude-code", "codex", "swe-agent"],
         help="Override approaches to run (default: from config)",
     )
     parser.add_argument(

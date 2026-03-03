@@ -26,6 +26,10 @@ class RunArtifacts(BaseModel):
     replication_results: Optional[ReplicationResults] = Field(
         default=None, description="Parsed replication results (direct for structured, parsed for freestyle)"
     )
+    usage: Optional[dict] = Field(
+        default=None,
+        description="Token usage summary: prompt_tokens, completion_tokens, total_tokens, num_calls, per_call details",
+    )
 
 
 class EvaluationResult(BaseModel):

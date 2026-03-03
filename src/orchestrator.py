@@ -34,8 +34,14 @@ def create_extraction_node(config: Config):
     def extraction_node(state: GraphState) -> dict:
         logger.info("Step 1: Extracting methodology...")
         try:
-            agent = ExtractorAgent(config)
-            paper_summary = agent.run(
+            agent = ExtractorAgent(
+                config,
+                model=config.extraction.model,
+                max_tokens=config.extraction.max_tokens,
+                use_vision=config.extraction.use_vision,
+                vision_dpi=config.extraction.vision_dpi,
+            )
+            paper_summary, _usage = agent.run(
                 paper_path=state["paper_pdf_path"],
                 paper_id=state.get("paper_id"),
             )
@@ -83,10 +89,22 @@ def create_replication_node(config: Config):
             )
 
             output_dir = state.get("output_dir")
-            if output_dir and config.output.save_intermediate_results:
-                _save_intermediate(
-                    replication_results, Path(output_dir) / "replication_results.json"
-                )
+            if output_dir:
+                # Save LLM token usage from the replicator agent
+                usage = agent.usage_summary
+                if usage.get("num_calls", 0) > 0:
+                    import json as _json
+                    usage_path = Path(output_dir) / "replicator_usage.json"
+                    usage_path.write_text(_json.dumps(usage, indent=2))
+                    logger.info(
+                        f"Replicator usage: {usage['num_calls']} calls, "
+                        f"{usage['total_tokens']:,} total tokens"
+                    )
+
+                if config.output.save_intermediate_results:
+                    _save_intermediate(
+                        replication_results, Path(output_dir) / "replication_results.json"
+                    )
 
             return {
                 "replication_results": replication_results,
@@ -123,6 +141,7 @@ def create_judge_node(config: Config):
                 provider=provider,
                 model=config.langgraph.default_model,
                 api_key=api_key,
+                use_vision=config.verification.use_vision_model,
             )
             verification_report, explanation_report = judge.run(
                 paper_path=state["paper_pdf_path"],
@@ -231,6 +250,24 @@ def build_from_summary_graph(config: Config) -> StateGraph:
     graph.set_entry_point("replicate")
     graph.add_conditional_edges("replicate", should_continue, {"continue": "judge", "stop": END})
     graph.add_edge("judge", END)
+
+    return graph.compile()
+
+
+def build_replicate_only_graph(config: Config) -> StateGraph:
+    """Build a graph that only replicates from an existing summary (no judge).
+
+    Useful for benchmarking, where a separate judge model handles evaluation
+    after all runs complete.
+
+    Returns:
+        A compiled LangGraph StateGraph.
+    """
+    graph = StateGraph(GraphState)
+    graph.add_node("replicate", create_replication_node(config))
+
+    graph.set_entry_point("replicate")
+    graph.add_edge("replicate", END)
 
     return graph.compile()
 
@@ -450,4 +487,46 @@ class ReplicationOrchestrator:
 
         return _graph_state_to_replication_state(
             result, paper_path, data_path, replication_package_path
+        )
+
+    def run_replicate_only(
+        self,
+        paper_summary,
+        data_path: str,
+        output_dir: str = "data/output",
+    ) -> ReplicationState:
+        """Run only the replication step from an existing summary (no judge).
+
+        Used by the benchmark runner, where a separate shared judge evaluates
+        all runs after completion.
+
+        Args:
+            paper_summary: Existing PaperSummary object.
+            data_path: Path to the data file(s).
+            output_dir: Directory for output files.
+
+        Returns:
+            ReplicationState with replication_results populated.
+        """
+        output_path = Path(output_dir)
+        output_path.mkdir(parents=True, exist_ok=True)
+
+        compiled_graph = build_replicate_only_graph(self.config)
+
+        initial_state: GraphState = {
+            "paper_pdf_path": "",
+            "data_path": data_path,
+            "output_dir": str(output_path),
+            "paper_id": paper_summary.paper_id,
+            "paper_summary": paper_summary,
+            "errors": [],
+            "warnings": [],
+            "current_step": "starting",
+            "success": True,
+        }
+
+        result = compiled_graph.invoke(initial_state)
+
+        return _graph_state_to_replication_state(
+            result, "", data_path
         )

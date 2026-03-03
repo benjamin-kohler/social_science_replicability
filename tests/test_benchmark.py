@@ -450,16 +450,17 @@ class TestStructuredRunner:
         mock_state.current_step = "complete"
 
         with patch("src.benchmark.structured_runner.ReplicationOrchestrator") as MockOrch:
-            MockOrch.return_value.run_from_summary.return_value = mock_state
+            MockOrch.return_value.run_replicate_only.return_value = mock_state
             workspace = tmp_path / "workspace"
             artifacts = runner.run(model_spec, paper_spec, paper_summary, workspace)
 
         assert artifacts.exit_code == 0
         assert artifacts.replication_results is not None
         assert artifacts.replication_results.paper_id == "test_paper"
-        # Verify run_from_summary was called (not run)
-        MockOrch.return_value.run_from_summary.assert_called_once()
+        # Verify run_replicate_only was called (not run or run_from_summary)
+        MockOrch.return_value.run_replicate_only.assert_called_once()
         MockOrch.return_value.run.assert_not_called()
+        MockOrch.return_value.run_from_summary.assert_not_called()
 
     def test_run_uses_paper_summary(self, tmp_path, model_spec, paper_spec, paper_summary,
                                      sample_replication_results):
@@ -472,18 +473,18 @@ class TestStructuredRunner:
         mock_state.current_step = "complete"
 
         with patch("src.benchmark.structured_runner.ReplicationOrchestrator") as MockOrch:
-            MockOrch.return_value.run_from_summary.return_value = mock_state
+            MockOrch.return_value.run_replicate_only.return_value = mock_state
             workspace = tmp_path / "workspace"
             runner.run(model_spec, paper_spec, paper_summary, workspace)
 
-        call_kwargs = MockOrch.return_value.run_from_summary.call_args
+        call_kwargs = MockOrch.return_value.run_replicate_only.call_args
         assert call_kwargs.kwargs["paper_summary"].paper_id == "test_paper"
 
     def test_run_failure(self, tmp_path, model_spec, paper_spec, paper_summary):
         runner = StructuredRunner(timeout=60)
 
         with patch("src.benchmark.structured_runner.ReplicationOrchestrator") as MockOrch:
-            MockOrch.return_value.run_from_summary.side_effect = RuntimeError("Pipeline crashed")
+            MockOrch.return_value.run_replicate_only.side_effect = RuntimeError("Pipeline crashed")
             workspace = tmp_path / "workspace"
             artifacts = runner.run(model_spec, paper_spec, paper_summary, workspace)
 
@@ -961,6 +962,87 @@ class TestClaudeCodeRunner:
         assert "NO searching for the paper" in content
         assert "NO searching for results" in content
 
+    def test_extract_usage_from_json(self):
+        """_extract_usage parses token data from Claude Code result event."""
+        events = [
+            {"type": "system", "subtype": "init"},
+            {
+                "type": "result",
+                "subtype": "success",
+                "num_turns": 10,
+                "total_cost_usd": 2.50,
+                "duration_api_ms": 60000,
+                "usage": {"input_tokens": 100, "output_tokens": 500},
+                "modelUsage": {
+                    "claude-opus-4-6": {
+                        "inputTokens": 80,
+                        "outputTokens": 400,
+                        "cacheReadInputTokens": 5000,
+                        "cacheCreationInputTokens": 2000,
+                        "costUSD": 2.0,
+                    },
+                    "claude-haiku-4-5-20251001": {
+                        "inputTokens": 20,
+                        "outputTokens": 100,
+                        "cacheReadInputTokens": 0,
+                        "cacheCreationInputTokens": 0,
+                        "costUSD": 0.5,
+                    },
+                },
+            },
+        ]
+        usage = ClaudeCodeRunner._extract_usage(json.dumps(events))
+        assert usage is not None
+        assert usage["num_turns"] == 10
+        assert usage["total_cost_usd"] == 2.50
+        assert usage["completion_tokens"] == 500  # 400 + 100
+        assert usage["cache_read_tokens"] == 5000
+        assert usage["cache_creation_tokens"] == 2000
+        # prompt_tokens = inputTokens + cache_read + cache_creation across models
+        assert usage["prompt_tokens"] == 80 + 5000 + 2000 + 20
+        assert "per_model" in usage
+        assert "claude-opus-4-6" in usage["per_model"]
+
+    def test_extract_usage_no_result_event(self):
+        """_extract_usage returns None when no result event exists."""
+        events = [{"type": "system", "subtype": "init"}]
+        assert ClaudeCodeRunner._extract_usage(json.dumps(events)) is None
+
+    def test_extract_usage_invalid_json(self):
+        """_extract_usage returns None for non-JSON output."""
+        assert ClaudeCodeRunner._extract_usage("not json") is None
+
+    def test_run_saves_usage_json(self, tmp_path, model_spec, paper_spec, paper_summary):
+        """Successful run with token data saves usage.json to run dir."""
+        runner = ClaudeCodeRunner(claude_binary="claude", timeout=30)
+        result_event = {
+            "type": "result",
+            "num_turns": 5,
+            "total_cost_usd": 1.0,
+            "duration_api_ms": 30000,
+            "usage": {},
+            "modelUsage": {
+                "test-model": {
+                    "inputTokens": 100,
+                    "outputTokens": 200,
+                    "cacheReadInputTokens": 0,
+                    "cacheCreationInputTokens": 0,
+                    "costUSD": 1.0,
+                }
+            },
+        }
+        stdout = json.dumps([result_event])
+
+        with patch("src.benchmark.claude_code_runner.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(stdout=stdout, stderr="", returncode=0)
+            workspace = tmp_path / "run" / "workspace"
+            artifacts = runner.run(model_spec, paper_spec, paper_summary, workspace)
+
+        assert artifacts.usage is not None
+        assert artifacts.usage["num_turns"] == 5
+        usage_file = workspace.parent / "usage.json"
+        assert usage_file.exists()
+
 
 # =============================================================================
 # TestCodexRunner
@@ -1111,6 +1193,65 @@ class TestCodexRunner:
         assert "Constraints" in content
         assert "NO searching for the paper" in content
 
+    def test_parse_jsonl_with_usage(self):
+        """_parse_jsonl_output extracts token usage from turn.completed events."""
+        lines = [
+            json.dumps({"type": "message", "role": "assistant", "content": "thinking..."}),
+            json.dumps({"type": "turn.completed", "usage": {"input_tokens": 100, "output_tokens": 50}}),
+            json.dumps({"type": "message", "role": "assistant", "content": "done"}),
+            json.dumps({"type": "turn.completed", "usage": {"input_tokens": 80, "output_tokens": 40}}),
+        ]
+        stdout = "\n".join(lines)
+        readable, usage = CodexRunner._parse_jsonl_output(stdout)
+        assert usage is not None
+        assert usage["prompt_tokens"] == 180
+        assert usage["completion_tokens"] == 90
+        assert usage["total_tokens"] == 270
+        assert usage["num_turns"] == 2
+        assert len(usage["per_turn"]) == 2
+        assert "thinking" in readable
+
+    def test_parse_jsonl_empty_output(self):
+        """_parse_jsonl_output returns None usage for empty output."""
+        readable, usage = CodexRunner._parse_jsonl_output("")
+        assert usage is None
+
+    def test_parse_jsonl_non_json(self):
+        """_parse_jsonl_output handles non-JSON lines gracefully."""
+        readable, usage = CodexRunner._parse_jsonl_output("not json\nalso not json")
+        assert usage is None
+        assert "[raw]" in readable
+
+    def test_run_with_json_flag(self, tmp_path, model_spec, paper_spec, paper_summary):
+        """Codex runner uses --json flag."""
+        runner = CodexRunner(codex_binary="codex", timeout=30)
+
+        with patch("src.benchmark.codex_runner.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(stdout="", stderr="", returncode=0)
+            workspace = tmp_path / "workspace"
+            runner.run(model_spec, paper_spec, paper_summary, workspace)
+
+        cmd = mock_run.call_args[0][0]
+        assert "--json" in cmd
+
+    def test_run_saves_usage_json(self, tmp_path, model_spec, paper_spec, paper_summary):
+        """Run with JSONL token data saves usage.json."""
+        runner = CodexRunner(codex_binary="codex", timeout=30)
+        lines = [
+            json.dumps({"type": "turn.completed", "usage": {"input_tokens": 100, "output_tokens": 50}}),
+        ]
+        stdout = "\n".join(lines)
+
+        with patch("src.benchmark.codex_runner.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(stdout=stdout, stderr="", returncode=0)
+            workspace = tmp_path / "run" / "workspace"
+            artifacts = runner.run(model_spec, paper_spec, paper_summary, workspace)
+
+        assert artifacts.usage is not None
+        assert artifacts.usage["num_turns"] == 1
+        usage_file = workspace.parent / "usage.json"
+        assert usage_file.exists()
+
 
 # =============================================================================
 # TestJudge
@@ -1119,19 +1260,57 @@ class TestCodexRunner:
 
 class TestJudge:
     def test_calculate_overall_grade_all_a(self):
-        grades = [ReplicationGrade.A, ReplicationGrade.A, ReplicationGrade.A]
-        assert Judge._calculate_overall_grade(grades) == ReplicationGrade.A
+        vs = [
+            ItemVerification(item_id=f"T{i}", item_type="table", grade=ReplicationGrade.A, comparison_notes="ok")
+            for i in range(3)
+        ]
+        assert Judge._calculate_overall_grade(vs) == ReplicationGrade.A
 
     def test_calculate_overall_grade_mixed(self):
-        grades = [ReplicationGrade.A, ReplicationGrade.B, ReplicationGrade.C]
-        assert Judge._calculate_overall_grade(grades) == ReplicationGrade.B
+        vs = [
+            ItemVerification(item_id="T1", item_type="table", grade=ReplicationGrade.A, comparison_notes="ok"),
+            ItemVerification(item_id="T2", item_type="table", grade=ReplicationGrade.B, comparison_notes="ok"),
+            ItemVerification(item_id="T3", item_type="table", grade=ReplicationGrade.C, comparison_notes="ok"),
+        ]
+        assert Judge._calculate_overall_grade(vs) == ReplicationGrade.B
 
     def test_calculate_overall_grade_all_f(self):
-        grades = [ReplicationGrade.F, ReplicationGrade.F]
-        assert Judge._calculate_overall_grade(grades) == ReplicationGrade.F
+        vs = [
+            ItemVerification(item_id=f"T{i}", item_type="table", grade=ReplicationGrade.F, comparison_notes="bad")
+            for i in range(2)
+        ]
+        assert Judge._calculate_overall_grade(vs) == ReplicationGrade.F
 
     def test_calculate_overall_grade_empty(self):
         assert Judge._calculate_overall_grade([]) == ReplicationGrade.F
+
+    def test_calculate_overall_grade_excludes_unverifiable(self):
+        """Unverifiable items are excluded from the average."""
+        vs = [
+            ItemVerification(item_id="T1", item_type="table", grade=ReplicationGrade.A, comparison_notes="ok"),
+            ItemVerification(item_id="T2", item_type="table", grade=ReplicationGrade.A, comparison_notes="ok"),
+            ItemVerification(item_id="T3", item_type="table", grade=ReplicationGrade.F, comparison_notes="no output", unverifiable=True),
+            ItemVerification(item_id="T4", item_type="table", grade=ReplicationGrade.F, comparison_notes="no output", unverifiable=True),
+            ItemVerification(item_id="F1", item_type="figure", grade=ReplicationGrade.F, comparison_notes="missing", unverifiable=True),
+        ]
+        # Without exclusion: (4+4+0+0+0)/5 = 1.6 → C
+        # With exclusion: (4+4)/2 = 4.0 → A
+        assert Judge._calculate_overall_grade(vs) == ReplicationGrade.A
+
+    def test_calculate_overall_grade_excludes_judge_error(self):
+        """Judge error items are excluded from the average."""
+        vs = [
+            ItemVerification(item_id="T1", item_type="table", grade=ReplicationGrade.B, comparison_notes="ok"),
+            ItemVerification(item_id="T2", item_type="table", grade=ReplicationGrade.F, comparison_notes="judge broke", judge_error=True),
+        ]
+        assert Judge._calculate_overall_grade(vs) == ReplicationGrade.B
+
+    def test_calculate_overall_grade_all_excluded(self):
+        """If every item is unverifiable, overall grade is F."""
+        vs = [
+            ItemVerification(item_id="T1", item_type="table", grade=ReplicationGrade.F, comparison_notes="no output", unverifiable=True),
+        ]
+        assert Judge._calculate_overall_grade(vs) == ReplicationGrade.F
 
     def test_generate_summary(self):
         verifications = [
@@ -1194,7 +1373,94 @@ class TestJudge:
         )
         assert verification.grade == ReplicationGrade.F
         assert "KeyError" in verification.comparison_notes
+        assert not verification.judge_error
+        assert verification.unverifiable is True
         assert analysis is None
+
+    def test_judge_table_structured_output(self):
+        """OpenAI path uses _call_llm_structured with TableJudgment model."""
+        from src.benchmark.judge import TableJudgment
+        judge = Judge(provider="openai", model="gpt-4o", api_key="fake")
+        gen_table = GeneratedTable(
+            table_number="Table 1",
+            data={"col": [1]},
+            code_reference="table_1.py",
+            execution_success=True,
+        )
+        parsed = TableJudgment(
+            grade="B",
+            comparison_notes="Close match",
+            numerical_differences={"max_difference_percent": 2.0, "key_differences": ["small rounding"]},
+            key_findings_match=True,
+            discrepancy={"description": "Small diff", "likely_causes": ["rounding"],
+                         "is_identifiable": True, "fault_attribution": "unclear",
+                         "confidence": "medium", "supporting_evidence": "n/a"},
+        )
+        judge._call_llm_structured = MagicMock(return_value=parsed)
+        verification, analysis = judge._judge_table(
+            gen_table, spec=None, paper_text="some text", repl_code="x=1", pkg_code=None,
+        )
+        assert verification.grade == ReplicationGrade.B
+        assert not verification.judge_error
+        judge._call_llm_structured.assert_called_once()
+
+    def test_judge_table_structured_error_sets_judge_error(self):
+        """When _call_llm_structured raises, grade F is flagged as judge_error."""
+        judge = Judge(provider="openai", model="gpt-4o", api_key="fake")
+        gen_table = GeneratedTable(
+            table_number="Table 1",
+            data={"col": [1]},
+            code_reference="table_1.py",
+            execution_success=True,
+        )
+        judge._call_llm_structured = MagicMock(side_effect=RuntimeError("API down"))
+        verification, analysis = judge._judge_table(
+            gen_table, spec=None, paper_text="some text", repl_code="x=1", pkg_code=None,
+        )
+        assert verification.grade == ReplicationGrade.F
+        assert verification.judge_error is True
+        assert "API down" in verification.comparison_notes
+
+    def test_judge_table_anthropic_retries_on_json_failure(self):
+        """Anthropic path retries once when _parse_json fails on the first attempt."""
+        judge = Judge(provider="anthropic", model="claude-sonnet-4-6", api_key="fake")
+        gen_table = GeneratedTable(
+            table_number="Table 1",
+            data={"col": [1]},
+            code_reference="table_1.py",
+            execution_success=True,
+        )
+        good_json = '{"grade": "B", "comparison_notes": "Close", "key_findings_match": true, "discrepancy": {"description": "Small diff", "likely_causes": ["rounding"], "is_identifiable": true, "fault_attribution": "unclear", "confidence": "medium"}}'
+        judge._call_llm = MagicMock(side_effect=["not valid json at all", good_json])
+        verification, analysis = judge._judge_table(
+            gen_table, spec=None, paper_text="some text", repl_code="x=1", pkg_code=None,
+        )
+        assert verification.grade == ReplicationGrade.B
+        assert judge._call_llm.call_count == 2
+        assert not verification.judge_error
+
+    def test_judge_table_anthropic_sets_judge_error_after_two_failures(self):
+        """Anthropic: after 2 failed attempts, grade F is flagged as judge_error."""
+        judge = Judge(provider="anthropic", model="claude-sonnet-4-6", api_key="fake")
+        gen_table = GeneratedTable(
+            table_number="Table 1",
+            data={"col": [1]},
+            code_reference="table_1.py",
+            execution_success=True,
+        )
+        judge._call_llm = MagicMock(return_value="not json")
+        verification, analysis = judge._judge_table(
+            gen_table, spec=None, paper_text="some text", repl_code="x=1", pkg_code=None,
+        )
+        assert verification.grade == ReplicationGrade.F
+        assert verification.judge_error is True
+        assert "Judge error" in verification.comparison_notes
+        assert judge._call_llm.call_count == 2
+
+    def test_reasoning_prefixes_covers_gpt52(self):
+        """gpt-5.2-* models are recognized as reasoning models."""
+        judge = Judge(provider="openai", model="gpt-5.2-codex", api_key="fake")
+        assert judge._is_reasoning is True
 
     def test_parse_judge_response_grade_a(self):
         resp = {

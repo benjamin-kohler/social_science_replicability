@@ -43,11 +43,14 @@ predict what the results should be - just implement the specified analysis corre
 CODE_GENERATION_PROMPT = """Generate Python code to replicate the analysis described below.
 
 ## Data
-The data has been loaded in a previous cell as `df`. Do NOT reload it.
+The following DataFrames are available in the kernel (loaded in a previous cell). Do NOT reload them.
 - Data path: {data_path}
 {data_file_info}
 
-## Actual Data Schema (from the loaded DataFrame)
+## Available DataFrames
+{available_dataframes}
+
+## Data Schemas
 {data_schema}
 
 ## Research Context:
@@ -63,10 +66,10 @@ The data has been loaded in a previous cell as `df`. Do NOT reload it.
 {analysis_spec}
 
 ## Requirements:
-1. `df` is already loaded — use it directly, do NOT reload
+1. Use the DataFrames listed above — they are already loaded. Do NOT reload data from disk.
 2. Apply all data processing steps in order
 3. Implement the exact regression/analysis specification
-4. Use ONLY column names that appear in the data schema above
+4. Use ONLY column names that appear in the data schemas above
 5. For tables: print the results DataFrame with `print()` so the output is captured
 6. For figures: use the ABSOLUTE path provided — do not construct your own path
 7. Add comments explaining each step
@@ -91,15 +94,18 @@ CODE_FIX_PROMPT = """The following Python code failed with an error. Fix the cod
 {error}
 ```
 
-## Data Schema (actual columns, dtypes, and sample values)
+## Available DataFrames
+{available_dataframes}
+
+## Data Schemas
 {data_schema}
 
 ## Original Task
 {analysis_spec}
 
 ## Requirements:
-1. `df` is already loaded — use it directly, do NOT reload
-2. Use ONLY column names that appear in the data schema above
+1. Use the DataFrames listed above — they are already loaded. Do NOT reload data from disk.
+2. Use ONLY column names that appear in the data schemas above
 3. Fix the error while preserving the original analysis intent
 4. For figures: use the ABSOLUTE path provided — do not construct your own path
 5. Print all table results clearly so they can be captured
@@ -135,6 +141,7 @@ class ReplicatorAgent(BaseAgent):
         )
         self.executor: Optional[CodeExecutor] = None
         self._data_schema_info: str = "Schema not yet captured."
+        self._dataframe_names: list[str] = []
         self._setup_code_str: str = ""
 
     def run(
@@ -195,9 +202,11 @@ class ReplicatorAgent(BaseAgent):
                 if not setup_result["success"]:
                     results.errors.append(f"Setup failed: {setup_result['error']}")
                     logger.error(f"Setup failed: {setup_result['error']}")
-                else:
-                    # Capture data schema after successful setup
-                    self._capture_data_schema()
+
+                # Capture data schema even after partial failure — some
+                # DataFrames may have loaded before the crash.
+                self._capture_data_schema()
+                if setup_result["success"]:
                     self._setup_code_str = setup_code.code
 
                 # Generate code for each table
@@ -238,32 +247,88 @@ class ReplicatorAgent(BaseAgent):
         return results
 
     def _capture_data_schema(self) -> None:
-        """Capture DataFrame schema (columns, dtypes, shape, sample rows) from the kernel."""
+        """Capture schemas for all DataFrame variables in the kernel namespace."""
+        # Step 1: discover all DataFrame variable names
+        discover_code = (
+            "import pandas as _pd\n"
+            "_df_names = [v for v in dir() if not v.startswith('_') "
+            "and isinstance(eval(v), _pd.DataFrame)]\n"
+            "print('|'.join(_df_names))"
+        )
+        discover_result = self.executor.execute(discover_code)
+
+        if not discover_result["success"] or not discover_result["output"].strip():
+            self._data_schema_info = "Could not discover DataFrames in kernel."
+            self._dataframe_names = []
+            logger.warning("Failed to discover DataFrames")
+            return
+
+        df_names = [
+            n.strip()
+            for n in discover_result["output"].strip().split("|")
+            if n.strip()
+        ]
+        self._dataframe_names = df_names
+
+        # Step 2: capture schema for each DataFrame (shape + dtypes + head)
         parts = []
+        for name in df_names:
+            df_parts = [f"### `{name}`"]
 
-        shape_result = self.executor.execute("print(df.shape)")
-        if shape_result["success"]:
-            parts.append(f"Shape: {shape_result['output'].strip()}")
+            shape_result = self.executor.execute(f"print({name}.shape)")
+            if shape_result["success"]:
+                df_parts.append(f"Shape: {shape_result['output'].strip()}")
 
-        dtypes_result = self.executor.execute("print(df.dtypes.to_string())")
-        if dtypes_result["success"]:
-            dtypes_text = dtypes_result["output"].strip()
-            # Truncate to first 80 columns if very wide
-            lines = dtypes_text.split("\n")
-            if len(lines) > 80:
-                dtypes_text = "\n".join(lines[:80]) + f"\n... ({len(lines) - 80} more columns)"
-            parts.append(f"Columns and dtypes:\n{dtypes_text}")
+            dtypes_result = self.executor.execute(
+                f"print({name}.dtypes.to_string())"
+            )
+            if dtypes_result["success"]:
+                dtypes_text = dtypes_result["output"].strip()
+                lines = dtypes_text.split("\n")
+                if len(lines) > 40:
+                    dtypes_text = (
+                        "\n".join(lines[:40])
+                        + f"\n... ({len(lines) - 40} more columns)"
+                    )
+                df_parts.append(f"Columns and dtypes:\n{dtypes_text}")
 
-        head_result = self.executor.execute("print(df.head(3).to_string())")
-        if head_result["success"]:
-            parts.append(f"Sample rows:\n{head_result['output'].strip()}")
+            head_result = self.executor.execute(
+                f"print({name}.head(3).to_string())"
+            )
+            if head_result["success"]:
+                df_parts.append(f"Sample rows:\n{head_result['output'].strip()}")
+
+            parts.append("\n".join(df_parts))
 
         if parts:
             self._data_schema_info = "\n\n".join(parts)
-            logger.info("Captured data schema from kernel")
+            logger.info(
+                f"Captured data schema for {len(df_names)} DataFrames: {df_names}"
+            )
         else:
             self._data_schema_info = "Could not capture data schema."
             logger.warning("Failed to capture data schema")
+
+    def _format_available_dataframes(self, spec=None) -> str:
+        """Format available DataFrame names for inclusion in prompts.
+
+        Args:
+            spec: Optional TableSpec/PlotSpec with data_source hint.
+
+        Returns:
+            Human-readable string listing available DataFrames.
+        """
+        if not self._dataframe_names:
+            return "- `df` (loaded in setup cell)"
+
+        lines = [f"- `{name}`" for name in self._dataframe_names]
+
+        if spec and getattr(spec, "data_source", None):
+            lines.append(
+                f"\n**Hint**: This analysis uses data described as: {spec.data_source}"
+            )
+
+        return "\n".join(lines)
 
     @staticmethod
     def _strip_ansi(text: str) -> str:
@@ -356,10 +421,14 @@ class ReplicatorAgent(BaseAgent):
 ## Requirements
 1. Import libraries: pandas, numpy, statsmodels (api + formula), matplotlib, seaborn, warnings
 2. Suppress warnings and set pandas display options (max_columns=None, width=None)
-3. Load the data file(s) into a DataFrame called `df`. Choose the right reader for the format (.dta → read_stata, .csv → read_csv, etc.)
-4. If the analysis needs multiple files merged, do so and store the result in `df`
-5. Print df.shape and df.columns so the next cells know what's available
-6. The primary variable MUST be named `df` — all subsequent analysis cells depend on this
+3. Load each data file into its own descriptively named DataFrame variable.
+   - Use the right reader for each format (.dta -> read_stata, .csv -> read_csv, etc.)
+   - Choose short, meaningful variable names (e.g., `df_country`, `df_county`, `df_survey`).
+   - If there is only ONE data file, name it `df`.
+   - Wrap each file load in try/except so that one unreadable file does not crash the entire setup.
+4. Print the variable name and shape for each DataFrame you create.
+   Use this exact format for each: `LOADED: <variable_name> = <shape>`
+5. Do NOT merge datasets unless the description explicitly says to. Each subsequent analysis cell will specify which DataFrame(s) it needs.
 
 Generate directly executable Python code (no function wrapping).
 
@@ -410,6 +479,7 @@ Generate directly executable Python code (no function wrapping).
         analysis_spec = f"""
 Table: {table_spec.table_number}
 Caption: {table_spec.caption}
+{f"Data source: {table_spec.data_source}" if table_spec.data_source else ""}
 Columns: {', '.join(table_spec.column_names)}
 Rows: {', '.join(table_spec.row_names)}
 Regression Specifications:
@@ -427,6 +497,7 @@ Use (XXX) for standard errors. Use --- for structurally empty cells.
 
         # Generate code using LLM
         data_file_info = self._scan_data_files(data_path)
+        available_dfs = self._format_available_dataframes(table_spec)
         prompt = CODE_GENERATION_PROMPT.format(
             data_path=data_path,
             data_file_info=data_file_info,
@@ -435,6 +506,7 @@ Use (XXX) for standard errors. Use --- for structurally empty cells.
             processing_steps=processing_steps or "No specific steps listed",
             analysis_spec=analysis_spec,
             data_schema=self._data_schema_info,
+            available_dataframes=available_dfs,
         )
 
         max_retries = self.config.execution.max_retries
@@ -465,6 +537,7 @@ Use (XXX) for standard errors. Use --- for structurally empty cells.
                     error=error_text,
                     data_schema=self._data_schema_info,
                     analysis_spec=analysis_spec,
+                    available_dataframes=available_dfs,
                 )
                 fix_response = self.generate(
                     fix_prompt, system_prompt=REPLICATOR_SYSTEM_PROMPT
@@ -503,16 +576,20 @@ Use (XXX) for standard errors. Use --- for structurally empty cells.
             if result["success"] and result["output"]:
                 csv_path = output_path / f"{table_label}.csv"
                 save_csv_code = (
-                    f"try:\n"
-                    f"    import pandas as _pd\n"
-                    f"    # Try to save the last DataFrame result as CSV\n"
-                    f"    _last_df = [v for v in dir() if isinstance(eval(v), _pd.DataFrame) and not v.startswith('_')]\n"
-                    f"    if _last_df:\n"
-                    f"        eval(_last_df[-1]).to_csv(r'{csv_path}', index=True)\n"
-                    f"except Exception:\n"
-                    f"    pass\n"
+                    f"import pandas as _pd, os as _os\n"
+                    f"_last_df = [v for v in dir() if isinstance(eval(v), _pd.DataFrame) and not v.startswith('_')]\n"
+                    f"if _last_df:\n"
+                    f"    _df_to_save = eval(_last_df[-1])\n"
+                    f"    _df_to_save.to_csv(r'{csv_path}', index=True)\n"
+                    f"    print(f'Saved CSV: {{_last_df[-1]}} ({{_df_to_save.shape}}) -> {csv_path}')\n"
+                    f"else:\n"
+                    f"    print('WARNING: No DataFrame found in kernel to save as CSV')\n"
                 )
-                self.executor.execute(save_csv_code)
+                save_result = self.executor.execute(save_csv_code)
+                if save_result.get("error"):
+                    logger.warning(f"CSV save failed for {table_label}: {save_result['error'][:200]}")
+                elif save_result.get("output"):
+                    logger.info(f"CSV save: {save_result['output'].strip()}")
 
             # Create GeneratedCode object
             gen_code = GeneratedCode(
@@ -566,6 +643,7 @@ Use (XXX) for standard errors. Use --- for structurally empty cells.
         analysis_spec = f"""
 Figure: {figure_spec.figure_number}
 Caption: {figure_spec.caption}
+{f"Data source: {figure_spec.data_source}" if figure_spec.data_source else ""}
 Plot type: {figure_spec.plot_type}
 X-axis: {figure_spec.x_axis}
 Y-axis: {figure_spec.y_axis}
@@ -585,6 +663,7 @@ Code skeleton (use as a starting point, fill in the data):
 """
 
         data_file_info = self._scan_data_files(data_path)
+        available_dfs = self._format_available_dataframes(figure_spec)
         prompt = CODE_GENERATION_PROMPT.format(
             data_path=data_path,
             data_file_info=data_file_info,
@@ -593,6 +672,7 @@ Code skeleton (use as a starting point, fill in the data):
             processing_steps=processing_steps or "No specific steps listed",
             analysis_spec=analysis_spec,
             data_schema=self._data_schema_info,
+            available_dataframes=available_dfs,
         )
 
         max_retries = self.config.execution.max_retries
@@ -623,6 +703,7 @@ Code skeleton (use as a starting point, fill in the data):
                     error=error_text,
                     data_schema=self._data_schema_info,
                     analysis_spec=analysis_spec,
+                    available_dataframes=available_dfs,
                 )
                 fix_response = self.generate(
                     fix_prompt, system_prompt=REPLICATOR_SYSTEM_PROMPT

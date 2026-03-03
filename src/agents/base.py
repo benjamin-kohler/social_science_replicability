@@ -44,6 +44,7 @@ class BaseAgent(ABC):
         self.role = role
         self.goal = goal
         self._chat_model = chat_model
+        self._usage_log: list[dict] = []
 
         logger.info(
             f"Initialized {self.name} agent with "
@@ -89,6 +90,7 @@ class BaseAgent(ABC):
         ]
 
         response = self.chat_model.invoke(messages)
+        self._record_usage(response)
         content = response.content
         # LangChain may return content as a list of blocks (e.g., newer OpenAI models
         # with reasoning). Extract only text blocks, skip reasoning/other blocks.
@@ -109,6 +111,29 @@ class BaseAgent(ABC):
 
         logger.debug(f"[{self.name}] RESPONSE:\n{content[:2000]}{'...' if len(content) > 2000 else ''}")
         return content
+
+    def _record_usage(self, response) -> None:
+        """Record token usage from a LangChain AIMessage response."""
+        usage = getattr(response, "usage_metadata", None)
+        if usage:
+            self._usage_log.append({
+                "input_tokens": usage.get("input_tokens", 0),
+                "output_tokens": usage.get("output_tokens", 0),
+                "total_tokens": usage.get("total_tokens", 0),
+            })
+
+    @property
+    def usage_summary(self) -> dict:
+        """Aggregate token usage across all LLM calls."""
+        total_input = sum(u["input_tokens"] for u in self._usage_log)
+        total_output = sum(u["output_tokens"] for u in self._usage_log)
+        return {
+            "num_calls": len(self._usage_log),
+            "prompt_tokens": total_input,
+            "completion_tokens": total_output,
+            "total_tokens": total_input + total_output,
+            "per_call": self._usage_log,
+        }
 
     def generate_json(
         self,

@@ -55,15 +55,17 @@ class ClaudeCodeRunner:
         """
         setup_workspace(paper, paper_summary, workspace_dir)
 
-        # Build the inline prompt — includes isolation constraints
+        # Build the inline prompt — action-oriented to minimize wasted turns
         prompt_text = (
             "Read TASK.md for your full instructions and constraints. "
             "IMPORTANT: Only access files inside this workspace directory. "
             "Do NOT read files outside this directory or search for the paper or its results. "
-            "First explore the data files in this workspace to learn the actual "
-            "column names. Then write Python scripts to replicate each table and figure. "
-            "You MUST execute the scripts with bash and fix any errors until they run "
-            "successfully. Use the exact output filenames specified in TASK.md for each item."
+            "TASK.md already describes the variables and data structure in detail. "
+            "Run ONE quick command to check actual column names, then immediately start "
+            "writing code. Write and execute each table/figure script ONE AT A TIME — "
+            "write, run, fix errors, then move to the next. "
+            "You MUST execute every script with bash and verify the output file exists. "
+            "Use the exact output filenames specified in TASK.md for each item."
         )
 
         web_status = "ALLOWED" if self.allow_web_access else "BLOCKED"
@@ -133,13 +135,70 @@ class ClaudeCodeRunner:
         )
         log_txt_path.write_text(readable_log)
 
+        # Extract token usage from the JSON output
+        usage = self._extract_usage(stdout)
+        if usage:
+            usage_path = workspace_dir.parent / "usage.json"
+            usage_path.write_text(json_mod.dumps(usage, indent=2))
+            logger.info(
+                f"Token usage: {usage.get('total_tokens', 0):,} total, "
+                f"cost=${usage.get('total_cost_usd', 0):.2f}"
+            )
+
         return RunArtifacts(
             workspace_dir=str(workspace_dir),
             stdout=stdout,
             stderr=stderr,
             exit_code=exit_code,
             duration_seconds=duration,
+            usage=usage,
         )
+
+    @staticmethod
+    def _extract_usage(stdout: str) -> dict | None:
+        """Extract token usage from Claude Code JSON output.
+
+        Parses the result event which contains aggregated usage, model-level
+        breakdown, cost, and turn count.
+        """
+        try:
+            events = json_mod.loads(stdout)
+            if not isinstance(events, list):
+                events = [events]
+        except (json_mod.JSONDecodeError, TypeError):
+            return None
+
+        for event in events:
+            if event.get("type") != "result":
+                continue
+            usage = event.get("usage", {})
+            model_usage = event.get("modelUsage", {})
+            # Aggregate across all models
+            total_input = sum(m.get("inputTokens", 0) for m in model_usage.values())
+            total_output = sum(m.get("outputTokens", 0) for m in model_usage.values())
+            total_cache_read = sum(m.get("cacheReadInputTokens", 0) for m in model_usage.values())
+            total_cache_create = sum(m.get("cacheCreationInputTokens", 0) for m in model_usage.values())
+            return {
+                "prompt_tokens": total_input + total_cache_read + total_cache_create,
+                "completion_tokens": total_output,
+                "total_tokens": total_input + total_cache_read + total_cache_create + total_output,
+                "cache_read_tokens": total_cache_read,
+                "cache_creation_tokens": total_cache_create,
+                "num_turns": event.get("num_turns", 0),
+                "total_cost_usd": event.get("total_cost_usd", 0),
+                "duration_api_ms": event.get("duration_api_ms", 0),
+                "per_model": {
+                    name: {
+                        "input_tokens": m.get("inputTokens", 0),
+                        "output_tokens": m.get("outputTokens", 0),
+                        "cache_read_tokens": m.get("cacheReadInputTokens", 0),
+                        "cache_creation_tokens": m.get("cacheCreationInputTokens", 0),
+                        "cost_usd": m.get("costUSD", 0),
+                    }
+                    for name, m in model_usage.items()
+                },
+            }
+        return None
 
     @staticmethod
     def _format_readable_log(

@@ -38,6 +38,7 @@ class SharedEvaluator:
             provider=provider,
             model=self.judge_config.model_name,
             api_key=api_key,
+            use_vision=self.judge_config.use_vision,
         )
 
     def evaluate(
@@ -79,10 +80,11 @@ class SharedEvaluator:
             replication_package_path=paper.replication_package_path,
         )
 
-        # Save reports
+        # Save reports and usage
         self._save_reports(
             artifacts.workspace_dir, verification_report, explanation_report,
         )
+        self._save_judge_usage(artifacts.workspace_dir, self._judge.usage_summary)
 
         item_grades = {
             v.item_id: v.grade.value
@@ -110,6 +112,17 @@ class SharedEvaluator:
             paper_id=paper_id, title="Unknown",
             data_description="Unknown", data_context="Unknown",
         )
+
+    @staticmethod
+    def _save_judge_usage(workspace_dir: str, usage: dict) -> None:
+        """Save judge token usage to the run directory."""
+        run_dir = Path(workspace_dir).parent
+        try:
+            usage_path = run_dir / "judge_usage.json"
+            usage_path.write_text(json.dumps(usage, indent=2))
+            logger.info(f"Saved judge usage: {usage_path}")
+        except Exception as e:
+            logger.warning(f"Could not save judge usage: {e}")
 
     @staticmethod
     def _save_reports(workspace_dir: str, verification_report, explanation_report) -> None:

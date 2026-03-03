@@ -34,6 +34,16 @@ class JudgeConfig(BaseModel):
 
     provider: str = Field(default="openai", description="LLM provider for the judge")
     model_name: str = Field(default="gpt-4o", description="Model name for the judge")
+    use_vision: bool = Field(default=True, description="Use vision for figure comparison")
+
+
+class ExtractorConfig(BaseModel):
+    """Configuration for the extractor model used for methodology extraction."""
+
+    model: str = Field(default="gpt-5.2", description="Model for extraction API calls")
+    max_tokens: int = Field(default=128000, description="Max output tokens per call")
+    use_vision: bool = Field(default=True, description="Send PDF pages as images")
+    vision_dpi: int = Field(default=200, description="DPI for PDF-to-image conversion")
 
 
 class BenchmarkConfig(BaseModel):
@@ -46,6 +56,7 @@ class BenchmarkConfig(BaseModel):
         description="Approaches to benchmark: 'freestyle' and/or 'structured'",
     )
     judge: JudgeConfig = Field(default_factory=JudgeConfig, description="Judge model config")
+    extractor: ExtractorConfig = Field(default_factory=ExtractorConfig, description="Extractor model config")
     output_dir: str = Field(default="data/benchmark_results", description="Output directory")
     opencode_binary: str = Field(default="opencode", description="Path to opencode binary")
     claude_code_binary: str = Field(default="claude", description="Path to claude CLI binary")

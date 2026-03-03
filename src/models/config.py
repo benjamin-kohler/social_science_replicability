@@ -29,6 +29,10 @@ class ExecutionConfig(BaseModel):
 class ExtractionConfig(BaseModel):
     """Configuration for paper extraction."""
 
+    model: str = Field(default="gpt-5.2", description="Model for extraction API calls")
+    max_tokens: int = Field(default=128000, description="Max output tokens per extraction call")
+    use_vision: bool = Field(default=True, description="Send PDF pages as images for extraction")
+    vision_dpi: int = Field(default=200, description="DPI for PDF-to-image conversion")
     focus_sections: list[str] = Field(
         default=["Methods", "Results", "Data"], description="Sections to focus on"
     )

@@ -3,13 +3,19 @@
 Uses plain OpenAI/Anthropic SDK calls — no LangChain, no LangGraph.
 Each item (table or figure) is graded in a single LLM call that produces
 both a verification grade and (if non-A) a discrepancy explanation.
+
+For OpenAI providers, the judge uses structured outputs via ``responses.parse()``
+with Pydantic models, guaranteeing valid JSON.  For Anthropic providers, it
+falls back to prompt-based JSON generation with ``_parse_json()`` + retry.
 """
 
 import base64
 import json
 import re
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Literal, Optional
+
+from pydantic import BaseModel, Field
 
 from ..models.schemas import (
     DiscrepancyAnalysis,
@@ -21,9 +27,48 @@ from ..models.schemas import (
     VerificationReport,
 )
 from ..utils.logging_utils import get_logger
-from ..utils.pdf_parser import extract_text_from_pdf
+from ..utils.pdf_parser import extract_text_from_pdf, pdf_to_base64_images
 
 logger = get_logger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Structured-output Pydantic models (used by OpenAI responses.parse)
+# ---------------------------------------------------------------------------
+
+class NumericalDifferences(BaseModel):
+    """Quantified differences between original and replicated results."""
+    max_difference_percent: float = Field(description="Maximum percentage difference")
+    key_differences: list[str] = Field(description="List of specific differences")
+
+
+class DiscrepancyDetail(BaseModel):
+    """Explanation of a discrepancy between original and replicated results."""
+    description: str = Field(description="What differs (empty string if grade A)")
+    likely_causes: list[str] = Field(description="Ordered list of possible causes")
+    is_identifiable: bool = Field(description="Whether the cause can be identified")
+    fault_attribution: str = Field(
+        description="One of: replicator, original_paper, unclear, data_limitation",
+    )
+    confidence: str = Field(description="One of: high, medium, low")
+    supporting_evidence: str = Field(description="Evidence from code comparison or paper")
+
+
+class TableJudgment(BaseModel):
+    """Structured judge output for a table replication."""
+    grade: Literal["A", "B", "C", "D", "F"] = Field(description="Replication grade")
+    comparison_notes: str = Field(description="Detailed comparison of the results")
+    numerical_differences: NumericalDifferences
+    key_findings_match: bool
+    discrepancy: DiscrepancyDetail
+
+
+class FigureJudgment(BaseModel):
+    """Structured judge output for a figure replication."""
+    grade: Literal["A", "B", "C", "D", "F"] = Field(description="Replication grade")
+    comparison_notes: str = Field(description="Detailed comparison assessment")
+    key_findings_match: bool
+    discrepancy: DiscrepancyDetail
 
 
 # ---------------------------------------------------------------------------
@@ -147,6 +192,15 @@ Respond with ONLY this JSON (no other text):
 # ---------------------------------------------------------------------------
 
 
+_JSON_RETRY_HINT = (
+    "\n\nIMPORTANT: Your previous response was not valid JSON and could not be parsed. "
+    "Respond with ONLY the JSON object — no markdown fences, no explanation, no extra text."
+)
+
+
+_STRUCTURED_PROVIDERS = {"openai"}  # providers that support responses.parse()
+
+
 class Judge:
     """Grades replication outputs against the original paper.
 
@@ -155,12 +209,14 @@ class Judge:
     """
 
     # Reasoning models don't support temperature
-    _REASONING_PREFIXES = ("o1", "o3", "o4", "gpt-5-mini", "gpt-5-nano")
+    _REASONING_PREFIXES = ("o1", "o3", "o4", "gpt-5-mini", "gpt-5-nano", "gpt-5-pro", "gpt-5.2", "gpt-5.3")
+    # All OpenAI calls use the Responses API
 
-    def __init__(self, provider: str, model: str, api_key: str):
+    def __init__(self, provider: str, model: str, api_key: str, use_vision: bool = True):
         self.provider = provider.lower()
         self.model = model
         self.api_key = api_key
+        self.use_vision = use_vision
         self._client: Any = None
         self._usage: list[dict] = []  # per-call token usage log
         self._is_reasoning = any(model.startswith(p) for p in self._REASONING_PREFIXES)
@@ -185,16 +241,14 @@ class Judge:
         if self.provider == "openai":
             kwargs: dict[str, Any] = {
                 "model": self.model,
-                "messages": [
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": prompt},
-                ],
+                "instructions": system,
+                "input": prompt,
             }
             if not self._is_reasoning:
                 kwargs["temperature"] = 0.0
-            resp = self.client.chat.completions.create(**kwargs)
-            self._record_usage_openai(resp)
-            return resp.choices[0].message.content
+            resp = self.client.responses.create(**kwargs)
+            self._record_usage_responses(resp)
+            return resp.output_text
         else:  # anthropic
             resp = self.client.messages.create(
                 model=self.model,
@@ -213,27 +267,20 @@ class Judge:
         if self.provider == "openai":
             kwargs: dict[str, Any] = {
                 "model": self.model,
-                "messages": [
-                    {"role": "system", "content": system},
+                "instructions": system,
+                "input": [
+                    {"type": "input_text", "text": prompt},
                     {
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": prompt},
-                            {
-                                "type": "image_url",
-                                "image_url": {
-                                    "url": f"data:{media_type};base64,{image_b64}",
-                                },
-                            },
-                        ],
+                        "type": "input_image",
+                        "image_url": f"data:{media_type};base64,{image_b64}",
                     },
                 ],
             }
             if not self._is_reasoning:
                 kwargs["temperature"] = 0.0
-            resp = self.client.chat.completions.create(**kwargs)
-            self._record_usage_openai(resp)
-            return resp.choices[0].message.content
+            resp = self.client.responses.create(**kwargs)
+            self._record_usage_responses(resp)
+            return resp.output_text
         else:  # anthropic
             resp = self.client.messages.create(
                 model=self.model,
@@ -260,16 +307,128 @@ class Judge:
             self._record_usage_anthropic(resp)
             return resp.content[0].text
 
+    # -- Multi-image vision calls ----------------------------------------------
+
+    def _call_llm_vision_multi(
+        self, system: str, prompt: str, images: list[dict],
+    ) -> str:
+        """Make a vision LLM call with multiple images.
+
+        Args:
+            images: list of dicts with 'base64' and optionally 'media_type' keys.
+                    Page-image dicts (from pdf_to_base64_images) are also accepted
+                    — media_type defaults to 'image/png'.
+        """
+        if self.provider == "openai":
+            input_parts: list[dict] = [{"type": "input_text", "text": prompt}]
+            for img in images:
+                media = img.get("media_type", "image/png")
+                input_parts.append({
+                    "type": "input_image",
+                    "image_url": f"data:{media};base64,{img['base64']}",
+                })
+            kwargs: dict[str, Any] = {
+                "model": self.model,
+                "instructions": system,
+                "input": input_parts,
+            }
+            if not self._is_reasoning:
+                kwargs["temperature"] = 0.0
+            resp = self.client.responses.create(**kwargs)
+            self._record_usage_responses(resp)
+            return resp.output_text
+        else:  # anthropic
+            content: list[dict] = []
+            for img in images:
+                media = img.get("media_type", "image/png")
+                content.append({
+                    "type": "image",
+                    "source": {"type": "base64", "media_type": media, "data": img["base64"]},
+                })
+            content.append({"type": "text", "text": prompt})
+            resp = self.client.messages.create(
+                model=self.model,
+                system=system,
+                messages=[{"role": "user", "content": content}],
+                temperature=0.0,
+                max_tokens=16384,
+            )
+            self._record_usage_anthropic(resp)
+            return resp.content[0].text
+
+    # -- Structured-output calls (OpenAI only) --------------------------------
+
+    def _call_llm_structured(self, system: str, prompt: str, response_model: type) -> BaseModel:
+        """Make an OpenAI responses.parse() call, returning a Pydantic model instance."""
+        kwargs: dict[str, Any] = {
+            "model": self.model,
+            "instructions": system,
+            "input": prompt,
+            "text_format": response_model,
+        }
+        if not self._is_reasoning:
+            kwargs["temperature"] = 0.0
+        resp = self.client.responses.parse(**kwargs)
+        self._record_usage_responses(resp)
+        return resp.output_parsed
+
+    def _call_llm_vision_structured(
+        self, system: str, prompt: str, image_b64: str, media_type: str,
+        response_model: type,
+    ) -> BaseModel:
+        """Make an OpenAI vision + structured-output call (single image)."""
+        kwargs: dict[str, Any] = {
+            "model": self.model,
+            "instructions": system,
+            "input": [
+                {"type": "input_text", "text": prompt},
+                {
+                    "type": "input_image",
+                    "image_url": f"data:{media_type};base64,{image_b64}",
+                },
+            ],
+            "text_format": response_model,
+        }
+        if not self._is_reasoning:
+            kwargs["temperature"] = 0.0
+        resp = self.client.responses.parse(**kwargs)
+        self._record_usage_responses(resp)
+        return resp.output_parsed
+
+    def _call_llm_vision_multi_structured(
+        self, system: str, prompt: str, images: list[dict],
+        response_model: type,
+    ) -> BaseModel:
+        """Make an OpenAI vision + structured-output call with multiple images."""
+        input_parts: list[dict] = [{"type": "input_text", "text": prompt}]
+        for img in images:
+            media = img.get("media_type", "image/png")
+            input_parts.append({
+                "type": "input_image",
+                "image_url": f"data:{media};base64,{img['base64']}",
+            })
+        kwargs: dict[str, Any] = {
+            "model": self.model,
+            "instructions": system,
+            "input": input_parts,
+            "text_format": response_model,
+        }
+        if not self._is_reasoning:
+            kwargs["temperature"] = 0.0
+        resp = self.client.responses.parse(**kwargs)
+        self._record_usage_responses(resp)
+        return resp.output_parsed
+
     # -- Token usage tracking ------------------------------------------------
 
-    def _record_usage_openai(self, resp) -> None:
-        """Record token usage from an OpenAI response."""
+    def _record_usage_responses(self, resp) -> None:
+        """Record token usage from an OpenAI Responses API response."""
         u = getattr(resp, "usage", None)
         if u:
             self._usage.append({
-                "prompt_tokens": u.prompt_tokens,
-                "completion_tokens": u.completion_tokens,
-                "total_tokens": u.total_tokens,
+                "prompt_tokens": getattr(u, "input_tokens", 0),
+                "completion_tokens": getattr(u, "output_tokens", 0),
+                "total_tokens": getattr(u, "total_tokens", 0),
             })
 
     def _record_usage_anthropic(self, resp) -> None:
@@ -294,6 +453,19 @@ class Judge:
             "total_tokens": total_prompt + total_completion,
             "per_call": self._usage,
         }
+
+    def _parse_json_with_retry(self, system: str, prompt: str) -> dict:
+        """Call LLM and parse JSON, retrying once on parse failure (Anthropic path)."""
+        last_error = None
+        for attempt in range(2):
+            try:
+                call_prompt = prompt if attempt == 0 else prompt + _JSON_RETRY_HINT
+                return self._parse_json(self._call_llm(system, call_prompt))
+            except Exception as e:
+                last_error = e
+                if attempt == 0:
+                    logger.warning(f"JSON parse failed, retrying: {e}")
+        raise last_error  # type: ignore[misc]
 
     def _parse_json(self, text: str) -> dict:
         """Parse JSON from LLM response, stripping markdown fences."""
@@ -328,13 +500,21 @@ class Judge:
         paper_text = extract_text_from_pdf(paper_path)
         package = self._load_replication_package(replication_package_path)
 
+        # Convert paper PDF to page images once (used for vision calls)
+        page_images: list[dict] = []
+        if self.use_vision:
+            try:
+                page_images = pdf_to_base64_images(paper_path, dpi=150)
+                logger.info(f"Converted paper to {len(page_images)} page images for vision judging")
+            except Exception as e:
+                logger.warning(f"Failed to convert paper to images, vision disabled: {e}")
+
         # Build lookups
         table_specs = {t.table_number: t for t in paper_summary.tables}
         figure_specs = {f.figure_number: f for f in paper_summary.figures}
 
         item_verifications: list[ItemVerification] = []
         discrepancy_analyses: list[DiscrepancyAnalysis] = []
-        grades: list[ReplicationGrade] = []
 
         # Judge tables
         for gen_table in replication_results.tables:
@@ -343,10 +523,9 @@ class Judge:
             pkg_code = self._find_package_code(package, gen_table.table_number)
 
             verification, analysis = self._judge_table(
-                gen_table, spec, paper_text, repl_code, pkg_code,
+                gen_table, spec, paper_text, repl_code, pkg_code, page_images,
             )
             item_verifications.append(verification)
-            grades.append(verification.grade)
             if analysis:
                 discrepancy_analyses.append(analysis)
 
@@ -357,15 +536,14 @@ class Judge:
             pkg_code = self._find_package_code(package, gen_figure.figure_number)
 
             verification, analysis = self._judge_figure(
-                gen_figure, spec, paper_text, repl_code, pkg_code,
+                gen_figure, spec, paper_text, repl_code, pkg_code, page_images,
             )
             item_verifications.append(verification)
-            grades.append(verification.grade)
             if analysis:
                 discrepancy_analyses.append(analysis)
 
         # Build reports
-        overall_grade = self._calculate_overall_grade(grades)
+        overall_grade = self._calculate_overall_grade(item_verifications)
         verification_report = VerificationReport(
             paper_id=replication_results.paper_id,
             overall_grade=overall_grade,
@@ -382,10 +560,6 @@ class Judge:
                     discrepancy_analyses, verification_report,
                 ),
                 recommendations=self._generate_recommendations(discrepancy_analyses),
-                replication_package_comparison=(
-                    self._compare_with_package(replication_results, package)
-                    if package else None
-                ),
             )
 
         logger.info(
@@ -403,18 +577,20 @@ class Judge:
         paper_text: str,
         repl_code: str,
         pkg_code: str | None,
+        page_images: list[dict] | None = None,
     ) -> tuple[ItemVerification, DiscrepancyAnalysis | None]:
         """Judge a single table."""
         item_id = gen_table.table_number
         logger.info(f"Judging {item_id}")
 
-        # Failed execution → automatic F
+        # Failed execution → unverifiable
         if not gen_table.execution_success:
             return (
                 ItemVerification(
                     item_id=item_id, item_type="table",
                     grade=ReplicationGrade.F,
                     comparison_notes=f"Replication failed: {gen_table.error_message}",
+                    unverifiable=True,
                 ),
                 None,
             )
@@ -432,8 +608,34 @@ class Judge:
             package_code=pkg_code[:3000] if pkg_code else "Not available",
         )
 
+        # Select relevant page images for this table
+        item_page_images: list[dict] = []
+        if page_images:
+            page_nums = self._find_item_pages(paper_text, item_id)
+            item_page_images = self._select_page_images(page_images, page_nums)
+
         try:
-            resp = self._parse_json(self._call_llm(JUDGE_SYSTEM_PROMPT, prompt))
+            if item_page_images and self.use_vision:
+                # Vision: send paper page images so the LLM can see the original table
+                if self.provider in _STRUCTURED_PROVIDERS:
+                    parsed = self._call_llm_vision_multi_structured(
+                        JUDGE_SYSTEM_PROMPT, prompt, item_page_images, TableJudgment,
+                    )
+                    resp = parsed.model_dump()
+                else:
+                    raw = self._call_llm_vision_multi(
+                        JUDGE_SYSTEM_PROMPT, prompt, item_page_images,
+                    )
+                    resp = self._parse_json(raw)
+            else:
+                # Text-only fallback
+                if self.provider in _STRUCTURED_PROVIDERS:
+                    parsed = self._call_llm_structured(
+                        JUDGE_SYSTEM_PROMPT, prompt, TableJudgment,
+                    )
+                    resp = parsed.model_dump()
+                else:
+                    resp = self._parse_json_with_retry(JUDGE_SYSTEM_PROMPT, prompt)
             return self._parse_judge_response(resp, item_id, "table")
         except Exception as e:
             logger.error(f"Judge call failed for {item_id}: {e}")
@@ -442,6 +644,7 @@ class Judge:
                     item_id=item_id, item_type="table",
                     grade=ReplicationGrade.F,
                     comparison_notes=f"Judge error: {e}",
+                    judge_error=True,
                 ),
                 None,
             )
@@ -453,6 +656,7 @@ class Judge:
         paper_text: str,
         repl_code: str,
         pkg_code: str | None,
+        page_images: list[dict] | None = None,
     ) -> tuple[ItemVerification, DiscrepancyAnalysis | None]:
         """Judge a single figure."""
         item_id = gen_figure.figure_number
@@ -464,6 +668,7 @@ class Judge:
                     item_id=item_id, item_type="figure",
                     grade=ReplicationGrade.F,
                     comparison_notes=f"Replication failed: {gen_figure.error_message}",
+                    unverifiable=True,
                 ),
                 None,
             )
@@ -475,6 +680,7 @@ class Judge:
                     item_id=item_id, item_type="figure",
                     grade=ReplicationGrade.F,
                     comparison_notes="Figure file not found",
+                    unverifiable=True,
                 ),
                 None,
             )
@@ -492,28 +698,58 @@ class Judge:
             subplots=spec.subplot_structure if spec and spec.subplot_structure else "None",
             replication_code=repl_code[:3000],
             package_code=pkg_code[:3000] if pkg_code else "Not available",
-            vision_note="The replicated figure image is attached for visual comparison.",
+            vision_note="The replicated figure image and original paper pages are attached for visual comparison.",
         )
 
+        # Collect all images: original paper pages + replicated figure
+        item_page_images: list[dict] = []
+        if page_images:
+            page_nums = self._find_item_pages(paper_text, item_id)
+            item_page_images = self._select_page_images(page_images, page_nums)
+
         try:
-            # Try vision comparison
+            if not self.use_vision:
+                raise RuntimeError("Vision disabled by configuration")
+            # Read replicated figure
             with open(fig_path, "rb") as f:
-                img_b64 = base64.b64encode(f.read()).decode("utf-8")
+                repl_img_b64 = base64.b64encode(f.read()).decode("utf-8")
             suffix = fig_path.suffix.lower()
-            media_type = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg"}.get(
+            repl_media = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg"}.get(
                 suffix, "image/png"
             )
-            raw = self._call_llm_vision(JUDGE_SYSTEM_PROMPT, prompt, img_b64, media_type)
-            resp = self._parse_json(raw)
+
+            # Build all vision images: paper pages first, then replicated figure
+            all_images = [
+                {"base64": img["base64"], "media_type": "image/png"}
+                for img in item_page_images
+            ]
+            all_images.append({"base64": repl_img_b64, "media_type": repl_media})
+
+            if self.provider in _STRUCTURED_PROVIDERS:
+                parsed = self._call_llm_vision_multi_structured(
+                    JUDGE_SYSTEM_PROMPT, prompt, all_images, FigureJudgment,
+                )
+                resp = parsed.model_dump()
+            else:
+                raw = self._call_llm_vision_multi(
+                    JUDGE_SYSTEM_PROMPT, prompt, all_images,
+                )
+                resp = self._parse_json(raw)
         except Exception as e:
             logger.warning(f"Vision comparison failed for {item_id}, falling back to text: {e}")
             # Text-only fallback
-            prompt = prompt.replace(
-                "The replicated figure image is attached for visual comparison.",
+            text_prompt = prompt.replace(
+                "The replicated figure image and original paper pages are attached for visual comparison.",
                 "Note: Visual comparison not available. Assess based on code and description.",
             )
             try:
-                resp = self._parse_json(self._call_llm(JUDGE_SYSTEM_PROMPT, prompt))
+                if self.provider in _STRUCTURED_PROVIDERS:
+                    parsed = self._call_llm_structured(
+                        JUDGE_SYSTEM_PROMPT, text_prompt, FigureJudgment,
+                    )
+                    resp = parsed.model_dump()
+                else:
+                    resp = self._parse_json_with_retry(JUDGE_SYSTEM_PROMPT, text_prompt)
             except Exception as e2:
                 logger.error(f"Judge call failed for {item_id}: {e2}")
                 return (
@@ -521,6 +757,7 @@ class Judge:
                         item_id=item_id, item_type="figure",
                         grade=ReplicationGrade.F,
                         comparison_notes=f"Judge error: {e2}",
+                        judge_error=True,
                     ),
                     None,
                 )
@@ -564,8 +801,8 @@ class Judge:
     # -- Helpers (migrated from verifier.py / explainer.py) -----------------
 
     @staticmethod
-    def _extract_table_pages(paper_text: str, item_id: str) -> str:
-        """Find PDF pages mentioning this item and return surrounding context."""
+    def _find_item_pages(paper_text: str, item_id: str) -> list[int]:
+        """Find page numbers (1-indexed) mentioning an item, plus neighbours."""
         pages = re.split(r"\n--- Page (\d+) ---\n", paper_text)
         page_map: dict[int, str] = {}
         for i in range(1, len(pages) - 1, 2):
@@ -574,7 +811,6 @@ class Judge:
             except (ValueError, IndexError):
                 continue
 
-        # Find pages mentioning the item
         matching: list[int] = []
         for pnum, ptext in page_map.items():
             if re.search(re.escape(item_id), ptext, re.IGNORECASE):
@@ -587,22 +823,54 @@ class Judge:
                     matching.append(pnum)
 
         if not matching:
-            return ""
+            return []
 
-        # Include surrounding pages for context
         all_pages: set[int] = set()
         for p in matching:
             all_pages.update(range(max(1, p - 1), p + 2))
 
+        return sorted(p for p in all_pages if p in page_map)
+
+    @staticmethod
+    def _extract_table_pages(paper_text: str, item_id: str) -> str:
+        """Find PDF pages mentioning this item and return surrounding text context."""
+        pages = re.split(r"\n--- Page (\d+) ---\n", paper_text)
+        page_map: dict[int, str] = {}
+        for i in range(1, len(pages) - 1, 2):
+            try:
+                page_map[int(pages[i])] = pages[i + 1]
+            except (ValueError, IndexError):
+                continue
+
+        page_nums = Judge._find_item_pages(paper_text, item_id)
         parts = []
-        for p in sorted(all_pages):
+        for p in page_nums:
             if p in page_map:
                 parts.append(f"--- Page {p} ---\n{page_map[p]}")
         return "\n".join(parts)
 
     @staticmethod
-    def _calculate_overall_grade(grades: list[ReplicationGrade]) -> ReplicationGrade:
-        """Average item grades to an overall grade."""
+    def _select_page_images(
+        page_images: list[dict], page_nums: list[int],
+    ) -> list[dict]:
+        """Select page images by page number."""
+        by_page = {img["page"]: img for img in page_images}
+        return [by_page[p] for p in page_nums if p in by_page]
+
+    @staticmethod
+    def _calculate_overall_grade(
+        verifications: list[ItemVerification],
+    ) -> ReplicationGrade:
+        """Average verifiable item grades to an overall grade.
+
+        Items flagged as ``unverifiable`` or ``judge_error`` are excluded from
+        the average so that execution failures or judge glitches don't drag
+        down the overall score.  If *all* items are excluded, the grade is F.
+        """
+        grades = [
+            v.grade for v in verifications
+            if not v.unverifiable and not v.judge_error
+        ]
         if not grades:
             return ReplicationGrade.F
         values = {"A": 4, "B": 3, "C": 2, "D": 1, "F": 0}
@@ -635,7 +903,19 @@ class Judge:
             if g in counts:
                 parts.append(f"  - Grade {g}: {counts[g]} items")
 
-        issues = [v for v in verifications if v.grade.value in ("D", "F")]
+        unverifiable = [v for v in verifications if v.unverifiable]
+        if unverifiable:
+            parts.append(f"\nUnverifiable items (excluded from overall grade): {len(unverifiable)}")
+            for v in unverifiable:
+                parts.append(f"  - {v.item_id}: {v.comparison_notes[:100]}...")
+
+        judge_errors = [v for v in verifications if v.judge_error]
+        if judge_errors:
+            parts.append(f"\nJudge errors (excluded from overall grade): {len(judge_errors)}")
+            for v in judge_errors:
+                parts.append(f"  - {v.item_id}: {v.comparison_notes[:100]}...")
+
+        issues = [v for v in verifications if v.grade.value in ("D", "F") and not v.judge_error and not v.unverifiable]
         if issues:
             parts.append("\nItems with significant issues:")
             for v in issues:
@@ -666,10 +946,18 @@ class Judge:
 
     @staticmethod
     def _find_code(results: ReplicationResults, item_id: str) -> str:
-        """Find the replication code for a specific item."""
+        """Find the replication code for a specific item.
+
+        Matches flexibly: 'Table 1' matches 'table_1.py', 'Code for Table 1', etc.
+        """
         item_lower = item_id.lower()
+        # Normalize to match underscored filenames: "table 1" -> "table_1"
+        item_underscored = item_lower.replace(" ", "_")
         for code in results.code_files:
-            if code.description and item_lower in code.description.lower():
+            if not code.description:
+                continue
+            desc_lower = code.description.lower()
+            if item_lower in desc_lower or item_underscored in desc_lower:
                 return code.code
         return "Code not found"
 
@@ -727,15 +1015,3 @@ class Judge:
             ]
         return recs
 
-    @staticmethod
-    def _compare_with_package(results: ReplicationResults, package: dict) -> str:
-        """Compare replication code with original package code."""
-        parts = []
-        for code in results.code_files:
-            if not code.description:
-                continue
-            for filename in package.get("files", {}):
-                if any(kw in filename.lower() for kw in ("table", "figure", "regression")):
-                    parts.append(f"Potential match: {filename} may correspond to {code.description}")
-                    break
-        return "\n".join(parts) if parts else "No direct code matches found"

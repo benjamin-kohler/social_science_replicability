@@ -94,21 +94,29 @@ Violating any of these constraints invalidates the benchmark run.
 
 ## Instructions
 
-1. **First, explore the data**: Use bash to run `head` and `python -c "import pandas as pd; df = pd.read_csv('...'); print(df.columns.tolist()); print(df.shape); print(df.dtypes)"` to understand the actual column names and data structure.
+EFFICIENCY IS CRITICAL — you have a limited number of turns. Do NOT waste turns
+on excessive data exploration. The methodology summary above already describes
+the variables, column names, and data structure in detail.
 
-2. **Write a shared data-preparation module** (`prepare_data.py`):
-   - Load and clean the data following the data processing steps below.
-   - Construct all derived variables, apply sample restrictions, and export a cleaned DataFrame.
-   - All table/figure scripts will import from this module.
+1. **Quick data check (1 turn max)**: Run ONE bash command to print actual
+   column names from the data files:
+   `python -c "import pandas as pd; [print(f, pd.read_stata(f'data/{{f}}').columns.tolist()[:10]) for f in __import__('os').listdir('data')]"`
+   This confirms the real column names. Do NOT spend more turns exploring.
 
-3. **Write ONE Python script per table and ONE per figure**, named after the output:
-   - `table_2.1.py` → produces `table_2.1.csv`
-   - `figure_3.1.py` → produces `figure_3.1.png`
-   - Each script imports `prepare_data.py`, runs the specific analysis, and saves the output.
-   - Use the ACTUAL column names from the data (step 1). Do NOT guess column names.
-   - Use `statsmodels` for regressions (OLS, Logit, IV/2SLS). Do NOT implement OLS manually.
+2. **Write `prepare_data.py`**: Load and clean the data following the processing
+   steps described above. All table/figure scripts will import from this module.
 
-4. **CRITICAL: Execute every script using bash** and fix any errors. Do not stop after writing the code — you MUST run each script with `python <script>.py` and verify the output file exists.
+3. **Write and execute ONE script at a time**: For each table/figure:
+   a. Write the script (e.g., `table_1.py` → `table_1.csv`)
+   b. Execute it with `python table_1.py`
+   c. Fix any errors immediately
+   d. Move on to the next item only after the output file is verified
+
+   Naming: `table_2.1.py` → `table_2.1.csv`, `figure_3.1.py` → `figure_3.1.png`
+   Use `statsmodels` for regressions (OLS, Logit, IV/2SLS). Do NOT implement OLS manually.
+
+4. **CRITICAL**: You MUST actually execute every script and verify the output
+   file exists. Do not stop after writing code.
 
 5. **Save all outputs** in the current working directory.
 
