@@ -44,7 +44,7 @@ approaches:
 
 judge:
   provider: openai
-  model_name: gpt-5-mini
+  model_name: gpt-5-mii
 
 output_dir: data/benchmark_results/postal_systems
 opencode_binary: /Users/bkohler/.opencode/bin/opencode

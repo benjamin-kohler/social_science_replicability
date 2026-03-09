@@ -1,0 +1,31 @@
+## Re-run Codex only on concentration_bias
+
+models:
+  - provider: openai
+    model_name: gpt-5.3-codex
+    api_key_env: OPENAI_API_KEY
+    approaches:
+      - codex
+
+papers:
+  - paper_id: concentration_bias
+    pdf_path: data/input/concentration_bias/paper.pdf
+    data_path: data/input/concentration_bias/data
+    replication_package_path: data/input/concentration_bias/replication_package
+
+approaches:
+  - codex
+
+judge:
+  provider: openai
+  model_name: gpt-5-mini
+  use_vision: true
+
+extractor:
+  model: gpt-5.2
+  use_vision: true
+
+output_dir: data/benchmark_results/concentration_bias
+claude_code_binary: claude
+timeout_seconds: 3600
+allow_web_access: false

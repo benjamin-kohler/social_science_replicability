@@ -8,14 +8,15 @@ from pathlib import Path
 
 from ..models.schemas import PaperSummary
 from ..utils.logging_utils import get_logger
+from .base_runner import BaseReplicationRunner
 from .config import ModelSpec, PaperSpec
 from .results import RunArtifacts
-from .task_prompt import setup_workspace
+from .task_prompt import setup_workspace, setup_workspace_paper_direct
 
 logger = get_logger(__name__)
 
 
-class ClaudeCodeRunner:
+class ClaudeCodeRunner(BaseReplicationRunner):
     """Runs a freestyle replication using the Claude Code CLI (claude -p).
 
     Creates an isolated workspace with only the methodology summary and data,
@@ -30,10 +31,9 @@ class ClaudeCodeRunner:
         max_turns: int = 50,
         allow_web_access: bool = False,
     ):
+        super().__init__(timeout=timeout, allow_web_access=allow_web_access)
         self.claude_binary = claude_binary
-        self.timeout = timeout
         self.max_turns = max_turns
-        self.allow_web_access = allow_web_access
 
     def run(
         self,
@@ -41,6 +41,7 @@ class ClaudeCodeRunner:
         paper: PaperSpec,
         paper_summary: PaperSummary,
         workspace_dir: Path,
+        paper_direct: bool = False,
     ) -> RunArtifacts:
         """Run a freestyle replication using Claude Code CLI.
 
@@ -49,24 +50,41 @@ class ClaudeCodeRunner:
             paper: Paper specification (used only for data_path).
             paper_summary: Pre-extracted methodology summary (no results).
             workspace_dir: Isolated workspace directory for this run.
+            paper_direct: If True, give the replicator the paper PDF instead
+                of the extracted methodology summary.
 
         Returns:
             RunArtifacts with workspace contents, stdout, stderr, exit code, duration.
         """
-        setup_workspace(paper, paper_summary, workspace_dir)
+        if paper_direct:
+            setup_workspace_paper_direct(paper, paper_summary, workspace_dir)
+        else:
+            setup_workspace(paper, paper_summary, workspace_dir)
 
         # Build the inline prompt — action-oriented to minimize wasted turns
-        prompt_text = (
-            "Read TASK.md for your full instructions and constraints. "
-            "IMPORTANT: Only access files inside this workspace directory. "
-            "Do NOT read files outside this directory or search for the paper or its results. "
-            "TASK.md already describes the variables and data structure in detail. "
-            "Run ONE quick command to check actual column names, then immediately start "
-            "writing code. Write and execute each table/figure script ONE AT A TIME — "
-            "write, run, fix errors, then move to the next. "
-            "You MUST execute every script with bash and verify the output file exists. "
-            "Use the exact output filenames specified in TASK.md for each item."
-        )
+        if paper_direct:
+            prompt_text = (
+                "Read TASK.md for your full instructions and constraints. "
+                "IMPORTANT: Only access files inside this workspace directory. "
+                "Do NOT search for the paper or its results online. "
+                "Read the paper PDF (paper.pdf) to understand the methodology, "
+                "then replicate all tables and figures using the provided data. "
+                "Write and execute each script ONE AT A TIME. "
+                "You MUST execute every script with bash and verify the output file exists. "
+                "Use the naming convention: table_N.py -> table_N.csv, figure_N.py -> figure_N.png."
+            )
+        else:
+            prompt_text = (
+                "Read TASK.md for your full instructions and constraints. "
+                "IMPORTANT: Only access files inside this workspace directory. "
+                "Do NOT read files outside this directory or search for the paper or its results. "
+                "TASK.md already describes the variables and data structure in detail. "
+                "Run ONE quick command to check actual column names, then immediately start "
+                "writing code. Write and execute each table/figure script ONE AT A TIME — "
+                "write, run, fix errors, then move to the next. "
+                "You MUST execute every script with bash and verify the output file exists. "
+                "Use the exact output filenames specified in TASK.md for each item."
+            )
 
         web_status = "ALLOWED" if self.allow_web_access else "BLOCKED"
         logger.info(

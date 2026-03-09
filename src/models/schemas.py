@@ -336,6 +336,81 @@ class ExplanationReport(BaseModel):
 
 
 # =============================================================================
+# Agentic Explainer Output: AgenticExplanationReport
+# =============================================================================
+
+
+class CodeComparison(BaseModel):
+    """Side-by-side comparison of replicator vs. original code for one item."""
+
+    item_id: str = Field(..., description="Item identifier (e.g., 'Table 1')")
+    replicator_approach: str = Field(
+        ..., description="Summary of what the replicator's code does"
+    )
+    original_approach: str = Field(
+        ..., description="Summary of what the original replication package code does"
+    )
+    key_differences: list[str] = Field(
+        default_factory=list, description="Specific code-level differences identified"
+    )
+
+
+class AgenticDiscrepancyAnalysis(BaseModel):
+    """Deep analysis of a discrepancy, produced by the agentic Explainer."""
+
+    item_id: str = Field(..., description="Item identifier (e.g., 'Table 1')")
+    grade: ReplicationGrade = Field(..., description="Grade from the judge")
+    verbal_explanation: str = Field(
+        ..., description="Multi-paragraph root cause analysis"
+    )
+    code_comparison: Optional[CodeComparison] = Field(
+        default=None,
+        description="Detailed code comparison (if original replication package available)",
+    )
+    fault_category: str = Field(
+        ...,
+        description="One of: replicator, extractor, original_authors, data_limitation, software_differences",
+    )
+    fault_explanation: str = Field(
+        ..., description="Why this fault category was chosen"
+    )
+    confidence: str = Field(..., description="Confidence level: high, medium, or low")
+    supporting_evidence: list[str] = Field(
+        default_factory=list,
+        description="Specific file references, line numbers, variable names, etc.",
+    )
+    suggested_fix: Optional[str] = Field(
+        default=None,
+        description="What the replicator could have done differently to get a better grade",
+    )
+
+
+class AgenticExplanationReport(BaseModel):
+    """Deep explanation report produced by the agentic Explainer phase."""
+
+    paper_id: str = Field(..., description="Paper identifier")
+    analyses: list[AgenticDiscrepancyAnalysis] = Field(
+        default_factory=list, description="Per-item deep analysis for non-A items"
+    )
+    overall_assessment: str = Field(
+        ..., description="Overall synthesis of discrepancy patterns"
+    )
+    methodology_quality_notes: str = Field(
+        ..., description="Assessment of the methodology extraction quality"
+    )
+    fault_summary: dict[str, int] = Field(
+        default_factory=dict,
+        description="Count of items per fault category, e.g. {'replicator': 3, 'extractor': 2}",
+    )
+    runner_model: str = Field(..., description="Model that ran the explanation")
+    runner_type: str = Field(
+        ..., description="CLI runner type: 'claude-code' or 'codex'"
+    )
+    duration_seconds: float = Field(default=0.0, description="Wall-clock duration")
+    usage: Optional[dict] = Field(default=None, description="Token usage summary")
+
+
+# =============================================================================
 # Workflow State
 # =============================================================================
 

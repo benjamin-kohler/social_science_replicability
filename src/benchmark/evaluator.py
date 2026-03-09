@@ -21,19 +21,25 @@ class SharedEvaluator:
     grading is comparable across different benchmark runs.
     """
 
-    def __init__(self, judge_config: JudgeConfig):
+    def __init__(
+        self,
+        judge_config: JudgeConfig,
+        api_keys: dict[str, str] | None = None,
+    ):
         self.judge_config = judge_config
+        self._api_keys = api_keys or {}
         self._judge = self._build_judge()
 
     def _build_judge(self) -> Judge:
         """Build a Judge from the config."""
         provider = self.judge_config.provider.lower()
         if provider == "openai":
-            api_key = os.environ.get("OPENAI_API_KEY", "")
+            env_var = "OPENAI_API_KEY"
         elif provider == "anthropic":
-            api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+            env_var = "ANTHROPIC_API_KEY"
         else:
-            api_key = ""
+            env_var = ""
+        api_key = self._api_keys.get(env_var) or os.environ.get(env_var, "")
         return Judge(
             provider=provider,
             model=self.judge_config.model_name,

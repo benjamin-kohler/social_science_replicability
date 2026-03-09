@@ -8,14 +8,15 @@ from pathlib import Path
 
 from ..models.schemas import PaperSummary
 from ..utils.logging_utils import get_logger
+from .base_runner import BaseReplicationRunner
 from .config import ModelSpec, PaperSpec
 from .results import RunArtifacts
-from .task_prompt import setup_workspace
+from .task_prompt import setup_workspace, setup_workspace_paper_direct
 
 logger = get_logger(__name__)
 
 
-class OpencodeRunner:
+class OpencodeRunner(BaseReplicationRunner):
     """Runs a freestyle replication using the opencode CLI.
 
     Creates an isolated workspace with only the methodology summary and data,
@@ -29,9 +30,8 @@ class OpencodeRunner:
         timeout: int = 600,
         allow_web_access: bool = False,
     ):
+        super().__init__(timeout=timeout, allow_web_access=allow_web_access)
         self.opencode_binary = opencode_binary
-        self.timeout = timeout
-        self.allow_web_access = allow_web_access
 
     def run(
         self,
@@ -39,6 +39,7 @@ class OpencodeRunner:
         paper: PaperSpec,
         paper_summary: PaperSummary,
         workspace_dir: Path,
+        paper_direct: bool = False,
     ) -> RunArtifacts:
         """Run a freestyle replication from a methodology summary.
 
@@ -47,30 +48,47 @@ class OpencodeRunner:
             paper: Paper specification (used only for data_path).
             paper_summary: Pre-extracted methodology summary (no results).
             workspace_dir: Isolated workspace directory for this run.
+            paper_direct: If True, give the replicator the paper PDF instead
+                of the extracted methodology summary.
 
         Returns:
             RunArtifacts with workspace contents, stdout, stderr, exit code, duration.
         """
-        setup_workspace(paper, paper_summary, workspace_dir)
+        if paper_direct:
+            setup_workspace_paper_direct(paper, paper_summary, workspace_dir)
+        else:
+            setup_workspace(paper, paper_summary, workspace_dir)
 
         # Build the inline prompt — action-oriented to minimize wasted turns.
-        # The model's apply_patch can fail and kill the session, so every turn
-        # must count. TASK.md already has detailed variable names and data
-        # descriptions — no need for extensive exploration.
-        prompt_text = (
-            "Read TASK.md for your full instructions and constraints. "
-            "IMPORTANT: Only access files inside this workspace directory. "
-            "Do NOT read files outside this directory or search for the paper or its results.\n\n"
-            "EFFICIENCY IS CRITICAL — you have a limited number of turns. "
-            "Do NOT spend many turns exploring data. TASK.md already describes the variables "
-            "and column names in detail. Instead:\n"
-            "1. Run ONE quick bash command to check actual column names in the data files.\n"
-            "2. Write prepare_data.py (shared data loading module).\n"
-            "3. Write and execute each table/figure script ONE AT A TIME.\n"
-            "4. Fix any errors immediately.\n\n"
-            "Write code IMMEDIATELY after a brief data check. "
-            "Use the EXACT output filenames specified in TASK.md for each item."
-        )
+        if paper_direct:
+            prompt_text = (
+                "Read TASK.md for your full instructions and constraints. "
+                "IMPORTANT: Only access files inside this workspace directory. "
+                "Do NOT search for the paper or its results online. "
+                "Read the paper PDF (paper.pdf) to understand the methodology, "
+                "then replicate all tables and figures using the provided data. "
+                "Write and execute each script ONE AT A TIME. "
+                "You MUST execute every script with bash and verify the output file exists. "
+                "Use the naming convention: table_N.py -> table_N.csv, figure_N.py -> figure_N.png."
+            )
+        else:
+            # The model's apply_patch can fail and kill the session, so every turn
+            # must count. TASK.md already has detailed variable names and data
+            # descriptions — no need for extensive exploration.
+            prompt_text = (
+                "Read TASK.md for your full instructions and constraints. "
+                "IMPORTANT: Only access files inside this workspace directory. "
+                "Do NOT read files outside this directory or search for the paper or its results.\n\n"
+                "EFFICIENCY IS CRITICAL — you have a limited number of turns. "
+                "Do NOT spend many turns exploring data. TASK.md already describes the variables "
+                "and column names in detail. Instead:\n"
+                "1. Run ONE quick bash command to check actual column names in the data files.\n"
+                "2. Write prepare_data.py (shared data loading module).\n"
+                "3. Write and execute each table/figure script ONE AT A TIME.\n"
+                "4. Fix any errors immediately.\n\n"
+                "Write code IMMEDIATELY after a brief data check. "
+                "Use the EXACT output filenames specified in TASK.md for each item."
+            )
 
         web_status = "ALLOWED" if self.allow_web_access else "BLOCKED"
         logger.info(

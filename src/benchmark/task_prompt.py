@@ -126,6 +126,174 @@ statistical specifications.
 """
 
 
+# ---------------------------------------------------------------------------
+# Paper-direct templates (replicator gets the raw PDF, not the summary)
+# ---------------------------------------------------------------------------
+
+WORKSPACE_CLAUDE_MD_PAPER_DIRECT = """\
+# Workspace Rules — READ CAREFULLY
+
+You are running a benchmark replication task in an isolated workspace.
+
+## File Access
+- You may ONLY read and write files inside this directory.
+- Do NOT read, list, or access any files outside this workspace.
+- Do NOT navigate to parent directories (`..`) or absolute paths outside this folder.
+- Do NOT use Glob, Grep, Read, or Bash to explore anything outside this workspace.
+
+## Internet Access
+- You may search for Python library documentation (statsmodels, pandas, matplotlib, scipy, numpy).
+- Do NOT search for this paper by title, authors, DOI, or any identifying information.
+- Do NOT search for this paper's results, replication code, replication packages, or related analyses.
+- Do NOT search for any prior replication attempts of this paper.
+
+## Task
+- Read TASK.md for your full instructions.
+- Work from the paper PDF and data provided in this workspace.
+"""
+
+PAPER_DIRECT_TASK_TEMPLATE = """\
+# Replication Task (Paper-Direct)
+
+You are given a research paper (PDF) and its associated dataset.
+Your goal is to replicate ALL empirical results (tables and figures)
+using the paper and the data provided. You do NOT have access to any
+replication code or replication package.
+
+## Data
+The dataset is located at: `{data_filename}`
+
+## Paper
+The paper PDF is located at: `{pdf_filename}`
+
+If you cannot read the PDF directly, use `pymupdf` or `pdfplumber` to
+extract text programmatically.
+
+## Constraints — MANDATORY
+
+You are in an isolated workspace for fair benchmarking. These rules are strict
+and non-negotiable:
+
+1. **FILE ACCESS — workspace only.** You may ONLY read and write files inside
+   this workspace directory. Do NOT access, read, list, or reference any files
+   outside of it. Do NOT navigate to parent directories or any other location
+   on disk. This workspace contains everything you need.
+
+2. **NO searching for the paper.** Do NOT search the internet for this paper,
+   its title, its authors, its published results, or any replication code or
+   packages. Do NOT search for any prior attempts to replicate this paper.
+
+3. **NO searching for results.** Do NOT look up expected coefficients, effect
+   sizes, tables, or figures from this paper anywhere. Your replication must be
+   derived entirely from reading the paper PDF and using the data provided.
+
+4. **Allowed web use.** You MAY search for documentation on Python libraries
+   (statsmodels, pandas, matplotlib, numpy, scipy, etc.) and general
+   statistical methods (e.g. "how to run IV/2SLS in statsmodels"). Any other
+   web searches are prohibited.
+
+5. **Work independently.** Base your replication ONLY on the paper and the
+   dataset. Do NOT look for pre-existing solutions, related code, or
+   reference implementations.
+
+Violating any of these constraints invalidates the benchmark run.
+
+## Instructions
+
+EFFICIENCY IS CRITICAL — you have a limited number of turns.
+
+1. **Read the paper**: Examine the PDF to identify all tables and figures
+   with empirical results. Note the methodology, variable definitions,
+   data processing steps, regression specifications, and sample restrictions.
+
+2. **Quick data check (1 turn max)**: Run ONE bash command to check actual
+   column names from the data files.
+
+3. **Write `prepare_data.py`**: Load and clean the data following the processing
+   steps described in the paper. All table/figure scripts will import from
+   this module.
+
+4. **Write and execute ONE script at a time**: For each table/figure:
+   a. Write the script (e.g., `table_1.py` → `table_1.csv`)
+   b. Execute it with `python table_1.py`
+   c. Fix any errors immediately
+   d. Move on to the next item only after the output file is verified
+
+   Naming: `table_N.py` → `table_N.csv`, `figure_N.py` → `figure_N.png`
+   Use `statsmodels` for regressions (OLS, Logit, IV/2SLS). Do NOT implement
+   OLS manually.
+
+5. **CRITICAL**: You MUST actually execute every script and verify the output
+   file exists. Do not stop after writing code.
+
+6. **Save all outputs** in the current working directory.
+
+Focus on substance and accuracy. Match the paper's methodology as closely as
+possible, including sample restrictions, variable transformations, and
+statistical specifications.
+"""
+
+
+def setup_workspace_paper_direct(
+    paper: PaperSpec,
+    paper_summary: PaperSummary,
+    workspace_dir: Path,
+) -> str:
+    """Set up an isolated workspace for paper-direct replication.
+
+    Copies the data AND the paper PDF into the workspace (but no replication
+    package). Writes a simplified TASK.md that instructs the replicator to
+    work from the PDF. Also saves methodology_summary.json for the judge
+    (the replicator is NOT told about this file).
+
+    Args:
+        paper: Paper specification (pdf_path, data_path).
+        paper_summary: Pre-extracted methodology summary (saved for judge only).
+        workspace_dir: Directory to set up.
+
+    Returns:
+        The data_filename used in the task prompt.
+    """
+    workspace_dir.mkdir(parents=True, exist_ok=True)
+
+    # Copy data (same as standard setup)
+    data_src = Path(paper.data_path)
+    if data_src.is_dir():
+        data_dest = workspace_dir / "data"
+        if data_dest.exists():
+            shutil.rmtree(data_dest)
+        shutil.copytree(data_src, data_dest)
+        data_filename = "data/"
+    elif data_src.exists():
+        shutil.copy2(data_src, workspace_dir / data_src.name)
+        data_filename = data_src.name
+    else:
+        data_filename = data_src.name
+
+    # Copy paper PDF into workspace
+    pdf_src = Path(paper.pdf_path)
+    pdf_filename = "paper.pdf"
+    if pdf_src.exists():
+        shutil.copy2(pdf_src, workspace_dir / pdf_filename)
+
+    # Write paper-direct task prompt (NO methodology summary for the replicator)
+    task_prompt = PAPER_DIRECT_TASK_TEMPLATE.format(
+        data_filename=data_filename,
+        pdf_filename=pdf_filename,
+    )
+    (workspace_dir / "TASK.md").write_text(task_prompt)
+
+    # Save methodology summary as JSON for the JUDGE (not referenced in TASK.md)
+    (workspace_dir / "methodology_summary.json").write_text(
+        json.dumps(paper_summary.model_dump(), indent=2, default=str)
+    )
+
+    # Write CLAUDE.md with paper-direct rules
+    (workspace_dir / "CLAUDE.md").write_text(WORKSPACE_CLAUDE_MD_PAPER_DIRECT)
+
+    return data_filename
+
+
 def build_task_prompt(summary: PaperSummary, data_filename: str) -> str:
     """Generate the task prompt from a methodology summary.
 

@@ -8,6 +8,7 @@ from typing import Optional
 from pydantic import BaseModel, Field
 
 from ..models.schemas import (
+    AgenticExplanationReport,
     ExplanationReport,
     ReplicationResults,
     VerificationReport,
@@ -54,7 +55,12 @@ class SingleRunResult(BaseModel):
     paper: PaperSpec = Field(..., description="Paper replicated")
     approach: str = Field(..., description="Approach: 'freestyle' or 'structured'")
     artifacts: RunArtifacts = Field(..., description="Run artifacts")
-    evaluation: EvaluationResult = Field(..., description="Judge evaluation")
+    evaluation: Optional[EvaluationResult] = Field(
+        default=None, description="Judge evaluation (None during replication-only phase)"
+    )
+    agentic_explanation: Optional[AgenticExplanationReport] = Field(
+        default=None, description="Deep explanation from agentic Explainer (Phase 3)"
+    )
     duration_seconds: float = Field(default=0.0, description="Total duration including evaluation")
 
 
@@ -90,8 +96,8 @@ class ResultsAggregator:
                 "provider": run.model.provider,
                 "paper": run.paper.paper_id,
                 "approach": run.approach,
-                "overall_grade": run.evaluation.overall_grade,
-                "item_grades": run.evaluation.item_grades,
+                "overall_grade": run.evaluation.overall_grade if run.evaluation else "PENDING",
+                "item_grades": run.evaluation.item_grades if run.evaluation else {},
                 "duration_seconds": run.duration_seconds,
             }
         results.summary = summary
@@ -106,16 +112,24 @@ class ResultsAggregator:
             fieldnames = [
                 "model", "provider", "paper", "approach",
                 "overall_grade", "duration_seconds",
+                "fault_replicator", "fault_extractor", "fault_original_authors",
+                "fault_data_limitation", "fault_software_differences",
             ]
             with open(csv_path, "w", newline="") as f:
                 writer = csv.DictWriter(f, fieldnames=fieldnames)
                 writer.writeheader()
                 for run in results.runs:
+                    fault = run.agentic_explanation.fault_summary if run.agentic_explanation else {}
                     writer.writerow({
                         "model": run.model.model_name,
                         "provider": run.model.provider,
                         "paper": run.paper.paper_id,
                         "approach": run.approach,
-                        "overall_grade": run.evaluation.overall_grade,
+                        "overall_grade": run.evaluation.overall_grade if run.evaluation else "PENDING",
                         "duration_seconds": round(run.duration_seconds, 1),
+                        "fault_replicator": fault.get("replicator", ""),
+                        "fault_extractor": fault.get("extractor", ""),
+                        "fault_original_authors": fault.get("original_authors", ""),
+                        "fault_data_limitation": fault.get("data_limitation", ""),
+                        "fault_software_differences": fault.get("software_differences", ""),
                     })

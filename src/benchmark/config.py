@@ -46,6 +46,27 @@ class ExtractorConfig(BaseModel):
     vision_dpi: int = Field(default=200, description="DPI for PDF-to-image conversion")
 
 
+# ---------------------------------------------------------------------------
+# Paper-direct approach helpers
+# ---------------------------------------------------------------------------
+
+PAPER_DIRECT_SUFFIX = "-paper"
+PAPER_DIRECT_INCOMPATIBLE = {"structured"}
+
+
+def parse_approach(approach: str) -> tuple[str, bool]:
+    """Parse an approach string into (base_approach, is_paper_direct).
+
+    Examples:
+        "claude-code"       -> ("claude-code", False)
+        "claude-code-paper" -> ("claude-code", True)
+        "freestyle-paper"   -> ("freestyle", True)
+    """
+    if approach.endswith(PAPER_DIRECT_SUFFIX):
+        return approach[: -len(PAPER_DIRECT_SUFFIX)], True
+    return approach, False
+
+
 class BenchmarkConfig(BaseModel):
     """Top-level benchmark configuration."""
 
@@ -66,4 +87,24 @@ class BenchmarkConfig(BaseModel):
         default=False,
         description="Allow models to use web search during replication. "
         "Default False blocks WebSearch/WebFetch for information isolation.",
+    )
+
+    # Explainer configuration
+    run_explainer: bool = Field(
+        default=False,
+        description="Run agentic explainer after judge to investigate discrepancies",
+    )
+    explainer_model: Optional[ModelSpec] = Field(
+        default=None,
+        description="Model for the explainer agent. Defaults to first model in models list.",
+    )
+    explainer_runner_type: str = Field(
+        default="claude-code",
+        description="CLI runner for explainer: 'claude-code' or 'codex'",
+    )
+    explainer_timeout_seconds: int = Field(
+        default=600, description="Timeout for explainer runs in seconds"
+    )
+    explainer_max_turns: int = Field(
+        default=30, description="Max turns for explainer agent"
     )

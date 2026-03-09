@@ -16,10 +16,10 @@ from src.benchmark.judge import Judge
 from src.models.schemas import PaperSummary
 
 # --- Configuration ---
-WORKSPACE = Path("data/benchmark_results/claude-opus-4-6_yellow_vests_carbon_tax_claude-code/workspace")
-PDF_PATH = "data/input/yellow_vests_carbon_tax/paper.pdf"
-REPLICATION_PACKAGE = "data/input/yellow_vests_carbon_tax/replication_package"
-PAPER_ID = "yellow_vests_carbon_tax"
+WORKSPACE = Path("data/benchmark_results/postal_systems/claude-opus-4-6_postal_systems_claude-code/workspace")
+PDF_PATH = "data/input/postal_systems/paper.pdf"
+REPLICATION_PACKAGE = "data/input/postal_systems/replication_package"
+PAPER_ID = "postal_systems"
 MODEL = "gpt-5-mini"
 
 # --- Load paper summary from workspace ---

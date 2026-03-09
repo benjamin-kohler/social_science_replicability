@@ -11,13 +11,14 @@ from ..models.config import Config, LangGraphConfig
 from ..models.schemas import PaperSummary
 from ..orchestrator import ReplicationOrchestrator
 from ..utils.logging_utils import get_logger
+from .base_runner import BaseReplicationRunner
 from .config import ModelSpec, PaperSpec
 from .results import RunArtifacts
 
 logger = get_logger(__name__)
 
 
-class StructuredRunner:
+class StructuredRunner(BaseReplicationRunner):
     """Runs a structured replication through the LangGraph pipeline.
 
     Uses run_from_summary() so the replicator only sees the pre-extracted
@@ -26,16 +27,13 @@ class StructuredRunner:
     benchmark's SharedEvaluator with the judge model.
     """
 
-    def __init__(self, timeout: int = 600, allow_web_access: bool = False):
-        self.timeout = timeout
-        self.allow_web_access = allow_web_access
-
     def run(
         self,
         model: ModelSpec,
         paper: PaperSpec,
         paper_summary: PaperSummary,
         workspace_dir: Path,
+        paper_direct: bool = False,
     ) -> RunArtifacts:
         """Run the structured pipeline from a pre-extracted summary.
 

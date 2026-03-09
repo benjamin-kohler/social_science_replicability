@@ -11,9 +11,10 @@ import yaml
 
 from ..models.schemas import PaperSummary
 from ..utils.logging_utils import get_logger
+from .base_runner import BaseReplicationRunner
 from .config import ModelSpec, PaperSpec
 from .results import RunArtifacts
-from .task_prompt import setup_workspace
+from .task_prompt import setup_workspace, setup_workspace_paper_direct
 
 logger = get_logger(__name__)
 
@@ -29,7 +30,7 @@ def _to_litellm_model(model: ModelSpec) -> str:
     return f"{model.provider}/{model.model_name}"
 
 
-class SweAgentRunner:
+class SweAgentRunner(BaseReplicationRunner):
     """Runs a freestyle replication using mini-swe-agent's Python API.
 
     Creates an isolated workspace with only the methodology summary and data,
@@ -44,10 +45,9 @@ class SweAgentRunner:
         cost_limit: float = 3.0,
         allow_web_access: bool = False,
     ):
-        self.timeout = timeout
+        super().__init__(timeout=timeout, allow_web_access=allow_web_access)
         self.step_limit = step_limit
         self.cost_limit = cost_limit
-        self.allow_web_access = allow_web_access
 
     def run(
         self,
@@ -55,6 +55,7 @@ class SweAgentRunner:
         paper: PaperSpec,
         paper_summary: PaperSummary,
         workspace_dir: Path,
+        paper_direct: bool = False,
     ) -> RunArtifacts:
         """Run a freestyle replication using mini-swe-agent.
 
@@ -63,21 +64,38 @@ class SweAgentRunner:
             paper: Paper specification (used only for data_path).
             paper_summary: Pre-extracted methodology summary (no results).
             workspace_dir: Isolated workspace directory for this run.
+            paper_direct: If True, give the replicator the paper PDF instead
+                of the extracted methodology summary.
 
         Returns:
             RunArtifacts with workspace contents, stdout, stderr, exit code, duration.
         """
-        setup_workspace(paper, paper_summary, workspace_dir)
+        if paper_direct:
+            setup_workspace_paper_direct(paper, paper_summary, workspace_dir)
+        else:
+            setup_workspace(paper, paper_summary, workspace_dir)
 
-        prompt_text = (
-            "Read TASK.md for your full instructions and constraints. "
-            "IMPORTANT: Only access files inside this workspace directory. "
-            "Do NOT read files outside this directory or search for the paper or its results. "
-            "First explore the data files in this workspace to learn the actual "
-            "column names. Then write Python scripts to replicate each table and figure. "
-            "You MUST execute the scripts with bash and fix any errors until they run "
-            "successfully. Use the exact output filenames specified in TASK.md for each item."
-        )
+        if paper_direct:
+            prompt_text = (
+                "Read TASK.md for your full instructions and constraints. "
+                "IMPORTANT: Only access files inside this workspace directory. "
+                "Do NOT search for the paper or its results online. "
+                "Read the paper PDF (paper.pdf) to understand the methodology, "
+                "then replicate all tables and figures using the provided data. "
+                "Write and execute each script ONE AT A TIME. "
+                "You MUST execute every script with bash and verify the output file exists. "
+                "Use the naming convention: table_N.py -> table_N.csv, figure_N.py -> figure_N.png."
+            )
+        else:
+            prompt_text = (
+                "Read TASK.md for your full instructions and constraints. "
+                "IMPORTANT: Only access files inside this workspace directory. "
+                "Do NOT read files outside this directory or search for the paper or its results. "
+                "First explore the data files in this workspace to learn the actual "
+                "column names. Then write Python scripts to replicate each table and figure. "
+                "You MUST execute the scripts with bash and fix any errors until they run "
+                "successfully. Use the exact output filenames specified in TASK.md for each item."
+            )
 
         litellm_model = _to_litellm_model(model)
         web_status = "ALLOWED" if self.allow_web_access else "BLOCKED"
