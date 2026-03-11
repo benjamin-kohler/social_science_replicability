@@ -22,8 +22,9 @@ load_dotenv()
 
 from ..agents.extractor import ExtractorAgent
 from ..models.config import Config, LangGraphConfig
-from ..models.schemas import AgenticExplanationReport, PaperSummary, ReplicationGrade
+from ..models.schemas import AgenticExplanationReport, PaperResults, PaperSummary, ReplicationGrade
 from ..utils.logging_utils import get_logger
+from .results_extractor import ResultsExtractor
 from .base_runner import BaseReplicationRunner
 from .explainer_runner import ExplainerRunner
 from .config import (
@@ -105,6 +106,7 @@ class BenchmarkRunner:
         }
 
         self._summary_cache: dict[str, PaperSummary] = {}
+        self._results_cache: dict[str, PaperResults] = {}
 
         # --- Explainer (Phase 3, optional) -----------------------------------
         self._explainer: Optional[ExplainerRunner] = None
@@ -195,6 +197,61 @@ class BenchmarkRunner:
             f"{len(summary.tables)} tables, {len(summary.figures)} figures"
         )
         return summary
+
+    def _extract_results(self, paper: PaperSpec, paper_summary: PaperSummary) -> PaperResults:
+        """Extract original table values from the paper.
+
+        Cached per paper_id so extraction only runs once.
+        """
+        if paper.paper_id in self._results_cache:
+            logger.info(f"Using cached results for {paper.paper_id}")
+            return self._results_cache[paper.paper_id]
+
+        # Check on-disk cache first
+        results_path = self.output_dir / "summaries" / f"{paper.paper_id}_results.json"
+        if results_path.exists():
+            try:
+                data = json.loads(results_path.read_text())
+                paper_results = PaperResults(**data)
+                self._results_cache[paper.paper_id] = paper_results
+                logger.info(f"Loaded cached results for {paper.paper_id} from disk")
+                return paper_results
+            except Exception as e:
+                logger.warning(f"Could not load cached results: {e}")
+
+        logger.info(f"Extracting original results for {paper.paper_id}")
+
+        ext_config = self.config.extractor
+        api_key = self.api_keys.get("OPENAI_API_KEY", "")
+
+        extractor = ResultsExtractor(
+            provider="openai",
+            model=ext_config.model,
+            api_key=api_key,
+            use_vision=ext_config.use_vision,
+            vision_dpi=ext_config.vision_dpi,
+        )
+
+        paper_results = extractor.run(
+            paper_path=paper.pdf_path,
+            paper_summary=paper_summary,
+        )
+
+        self._results_cache[paper.paper_id] = paper_results
+
+        # Persist
+        summary_dir = self.output_dir / "summaries"
+        summary_dir.mkdir(parents=True, exist_ok=True)
+        with open(results_path, "w") as f:
+            json.dump(paper_results.model_dump(), f, indent=2, default=str)
+        with open(summary_dir / f"{paper.paper_id}_results_usage.json", "w") as f:
+            json.dump(extractor.usage_summary, f, indent=2)
+
+        logger.info(
+            f"Extracted results for {paper.paper_id}: "
+            f"{len(paper_results.tables)} tables"
+        )
+        return paper_results
 
     # -------------------------------------------------------------------------
     # Resumption helpers
@@ -352,10 +409,15 @@ class BenchmarkRunner:
             f"{len(self.config.approaches)} approaches)"
         )
 
-        # Pre-extract summaries for all papers
+        # Pre-extract summaries and original results for all papers
         for paper in self.config.papers:
             try:
-                self._extract_summary(paper)
+                summary = self._extract_summary(paper)
+                # Extract original table values (for programmatic comparison)
+                try:
+                    self._extract_results(paper, summary)
+                except Exception as e:
+                    logger.warning(f"Failed to extract results for {paper.paper_id}: {e}")
             except Exception as e:
                 logger.error(f"Failed to extract summary for {paper.paper_id}: {e}")
 
@@ -404,9 +466,11 @@ class BenchmarkRunner:
                 logger.info(f"[{idx}/{len(pending)}] Evaluate: {label}")
                 try:
                     paper_summary = self._summary_cache.get(run_result.paper.paper_id)
+                    paper_results = self._results_cache.get(run_result.paper.paper_id)
                     evaluation = self.evaluator.evaluate(
                         run_result.paper, run_result.artifacts,
                         paper_summary=paper_summary,
+                        paper_results=paper_results,
                     )
                     run_result.evaluation = evaluation
                 except Exception as e:
@@ -492,7 +556,16 @@ class BenchmarkRunner:
         start = time.time()
         artifacts = self._run_replication(model, paper, approach)
         paper_summary = self._extract_summary(paper)
-        evaluation = self.evaluator.evaluate(paper, artifacts, paper_summary=paper_summary)
+        try:
+            paper_results = self._extract_results(paper, paper_summary)
+        except Exception as e:
+            logger.warning(f"Could not extract results for {paper.paper_id}: {e}")
+            paper_results = None
+        evaluation = self.evaluator.evaluate(
+            paper, artifacts,
+            paper_summary=paper_summary,
+            paper_results=paper_results,
+        )
 
         return SingleRunResult(
             model=model,

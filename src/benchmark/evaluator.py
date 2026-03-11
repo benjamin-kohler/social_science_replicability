@@ -4,9 +4,10 @@ import json
 import os
 from pathlib import Path
 
-from ..models.schemas import PaperSummary
+from ..models.schemas import PaperResults, PaperSummary
 from ..utils.logging_utils import get_logger
 from .artifact_parser import ArtifactParser
+from .comparator import ComparatorAgent
 from .config import JudgeConfig, PaperSpec
 from .judge import Judge
 from .results import EvaluationResult, RunArtifacts
@@ -28,7 +29,16 @@ class SharedEvaluator:
     ):
         self.judge_config = judge_config
         self._api_keys = api_keys or {}
+        self._comparator = self._build_comparator()
         self._judge = self._build_judge()
+
+    def _build_comparator(self) -> ComparatorAgent:
+        """Build a ComparatorAgent using CLI tool config."""
+        return ComparatorAgent(
+            cli_tool=getattr(self.judge_config, "comparator_cli_tool", "claude-code"),
+            model=getattr(self.judge_config, "comparator_model", "claude-sonnet-4-6"),
+            timeout=getattr(self.judge_config, "comparator_timeout", 300),
+        )
 
     def _build_judge(self) -> Judge:
         """Build a Judge from the config."""
@@ -45,6 +55,7 @@ class SharedEvaluator:
             model=self.judge_config.model_name,
             api_key=api_key,
             use_vision=self.judge_config.use_vision,
+            comparator=self._comparator,
         )
 
     def evaluate(
@@ -52,6 +63,7 @@ class SharedEvaluator:
         paper: PaperSpec,
         artifacts: RunArtifacts,
         paper_summary: PaperSummary | None = None,
+        paper_results: PaperResults | None = None,
     ) -> EvaluationResult:
         """Evaluate artifacts from a benchmark run.
 
@@ -59,6 +71,8 @@ class SharedEvaluator:
             paper: Paper specification with paths.
             artifacts: Run artifacts (workspace_dir must exist).
             paper_summary: Methodology summary. If None, loaded from workspace.
+            paper_results: Extracted original table values. If None, loaded from
+                summaries dir or tables fall back to LLM-only judging.
 
         Returns:
             EvaluationResult with grades and analyses.
@@ -77,13 +91,19 @@ class SharedEvaluator:
                 artifacts.workspace_dir, paper.paper_id
             )
 
+        # Try to load paper_results from summaries dir if not provided
+        if paper_results is None:
+            paper_results = self._load_results_from_summaries(
+                artifacts.workspace_dir, paper.paper_id
+            )
+
         # Single judge call produces both reports
         logger.info(f"Running judge for {paper.paper_id}")
         verification_report, explanation_report = self._judge.run(
             paper_path=paper.pdf_path,
             paper_summary=paper_summary,
             replication_results=replication_results,
-            replication_package_path=paper.replication_package_path,
+            paper_results=paper_results,
         )
 
         # Save reports and usage
@@ -118,6 +138,23 @@ class SharedEvaluator:
             paper_id=paper_id, title="Unknown",
             data_description="Unknown", data_context="Unknown",
         )
+
+    @staticmethod
+    def _load_results_from_summaries(
+        workspace_dir: str, paper_id: str,
+    ) -> PaperResults | None:
+        """Try to load PaperResults from the summaries directory."""
+        # Walk up from workspace to find summaries dir
+        run_dir = Path(workspace_dir).parent  # model_paper_approach dir
+        output_dir = run_dir.parent  # benchmark output dir
+        results_path = output_dir / "summaries" / f"{paper_id}_results.json"
+        if results_path.exists():
+            try:
+                data = json.loads(results_path.read_text())
+                return PaperResults(**data)
+            except Exception as e:
+                logger.warning(f"Could not load paper results from {results_path}: {e}")
+        return None
 
     @staticmethod
     def _save_judge_usage(workspace_dir: str, usage: dict) -> None:

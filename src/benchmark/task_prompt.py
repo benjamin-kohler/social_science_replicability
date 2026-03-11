@@ -256,13 +256,15 @@ def setup_workspace_paper_direct(
     """
     workspace_dir.mkdir(parents=True, exist_ok=True)
 
-    # Copy data (same as standard setup)
-    data_src = Path(paper.data_path)
+    # Symlink data into workspace (avoids duplicating large datasets)
+    data_src = Path(paper.data_path).resolve()
     if data_src.is_dir():
         data_dest = workspace_dir / "data"
-        if data_dest.exists():
+        if data_dest.is_symlink():
+            data_dest.unlink()
+        elif data_dest.exists():
             shutil.rmtree(data_dest)
-        shutil.copytree(data_src, data_dest)
+        data_dest.symlink_to(data_src)
         data_filename = "data/"
     elif data_src.exists():
         shutil.copy2(data_src, workspace_dir / data_src.name)
@@ -436,13 +438,15 @@ def setup_workspace(
     """
     workspace_dir.mkdir(parents=True, exist_ok=True)
 
-    # Copy ONLY the data into workspace (no paper PDF, no replication package)
-    data_src = Path(paper.data_path)
+    # Symlink data into workspace (avoids duplicating large datasets)
+    data_src = Path(paper.data_path).resolve()
     if data_src.is_dir():
         data_dest = workspace_dir / "data"
-        if data_dest.exists():
+        if data_dest.is_symlink():
+            data_dest.unlink()
+        elif data_dest.exists():
             shutil.rmtree(data_dest)
-        shutil.copytree(data_src, data_dest)
+        data_dest.symlink_to(data_src)
         data_filename = "data/"
     elif data_src.exists():
         shutil.copy2(data_src, workspace_dir / data_src.name)

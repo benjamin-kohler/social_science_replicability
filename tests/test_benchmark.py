@@ -449,7 +449,7 @@ class TestStructuredRunner:
         mock_state.errors = []
         mock_state.current_step = "complete"
 
-        with patch("src.benchmark.structured_runner.ReplicationOrchestrator") as MockOrch:
+        with patch("src.orchestrator.ReplicationOrchestrator") as MockOrch:
             MockOrch.return_value.run_replicate_only.return_value = mock_state
             workspace = tmp_path / "workspace"
             artifacts = runner.run(model_spec, paper_spec, paper_summary, workspace)
@@ -472,7 +472,7 @@ class TestStructuredRunner:
         mock_state.errors = []
         mock_state.current_step = "complete"
 
-        with patch("src.benchmark.structured_runner.ReplicationOrchestrator") as MockOrch:
+        with patch("src.orchestrator.ReplicationOrchestrator") as MockOrch:
             MockOrch.return_value.run_replicate_only.return_value = mock_state
             workspace = tmp_path / "workspace"
             runner.run(model_spec, paper_spec, paper_summary, workspace)
@@ -483,7 +483,7 @@ class TestStructuredRunner:
     def test_run_failure(self, tmp_path, model_spec, paper_spec, paper_summary):
         runner = StructuredRunner(timeout=60)
 
-        with patch("src.benchmark.structured_runner.ReplicationOrchestrator") as MockOrch:
+        with patch("src.orchestrator.ReplicationOrchestrator") as MockOrch:
             MockOrch.return_value.run_replicate_only.side_effect = RuntimeError("Pipeline crashed")
             workspace = tmp_path / "workspace"
             artifacts = runner.run(model_spec, paper_spec, paper_summary, workspace)
@@ -1344,21 +1344,6 @@ class TestJudge:
         result = Judge._extract_table_pages(paper_text, "Table 99")
         assert result == ""
 
-    def test_load_replication_package_exists(self, tmp_path):
-        (tmp_path / "analysis.do").write_text("reg y x, robust")
-        (tmp_path / "helpers.py").write_text("import pandas as pd")
-        result = Judge._load_replication_package(str(tmp_path))
-        assert result is not None
-        assert len(result["files"]) == 2
-
-    def test_load_replication_package_missing(self):
-        result = Judge._load_replication_package("/nonexistent/path")
-        assert result is None
-
-    def test_load_replication_package_none(self):
-        result = Judge._load_replication_package(None)
-        assert result is None
-
     def test_judge_table_failed_execution(self):
         judge = Judge(provider="openai", model="gpt-4o", api_key="fake")
         gen_table = GeneratedTable(
@@ -1369,7 +1354,7 @@ class TestJudge:
             error_message="KeyError: 'missing_col'",
         )
         verification, analysis = judge._judge_table(
-            gen_table, spec=None, paper_text="", repl_code="", pkg_code=None,
+            gen_table, spec=None, paper_text="",
         )
         assert verification.grade == ReplicationGrade.F
         assert "KeyError" in verification.comparison_notes
@@ -1378,8 +1363,8 @@ class TestJudge:
         assert analysis is None
 
     def test_judge_table_structured_output(self):
-        """OpenAI path uses _call_llm_structured with TableJudgment model."""
-        from src.benchmark.judge import TableJudgment
+        """OpenAI path uses _call_llm_structured for table LLM fallback."""
+        from src.benchmark.judge import FigureJudgment
         judge = Judge(provider="openai", model="gpt-4o", api_key="fake")
         gen_table = GeneratedTable(
             table_number="Table 1",
@@ -1387,10 +1372,9 @@ class TestJudge:
             code_reference="table_1.py",
             execution_success=True,
         )
-        parsed = TableJudgment(
+        parsed = FigureJudgment(
             grade="B",
             comparison_notes="Close match",
-            numerical_differences={"max_difference_percent": 2.0, "key_differences": ["small rounding"]},
             key_findings_match=True,
             discrepancy={"description": "Small diff", "likely_causes": ["rounding"],
                          "is_identifiable": True, "fault_attribution": "unclear",
@@ -1398,7 +1382,7 @@ class TestJudge:
         )
         judge._call_llm_structured = MagicMock(return_value=parsed)
         verification, analysis = judge._judge_table(
-            gen_table, spec=None, paper_text="some text", repl_code="x=1", pkg_code=None,
+            gen_table, spec=None, paper_text="some text",
         )
         assert verification.grade == ReplicationGrade.B
         assert not verification.judge_error
@@ -1415,7 +1399,7 @@ class TestJudge:
         )
         judge._call_llm_structured = MagicMock(side_effect=RuntimeError("API down"))
         verification, analysis = judge._judge_table(
-            gen_table, spec=None, paper_text="some text", repl_code="x=1", pkg_code=None,
+            gen_table, spec=None, paper_text="some text",
         )
         assert verification.grade == ReplicationGrade.F
         assert verification.judge_error is True
@@ -1433,7 +1417,7 @@ class TestJudge:
         good_json = '{"grade": "B", "comparison_notes": "Close", "key_findings_match": true, "discrepancy": {"description": "Small diff", "likely_causes": ["rounding"], "is_identifiable": true, "fault_attribution": "unclear", "confidence": "medium"}}'
         judge._call_llm = MagicMock(side_effect=["not valid json at all", good_json])
         verification, analysis = judge._judge_table(
-            gen_table, spec=None, paper_text="some text", repl_code="x=1", pkg_code=None,
+            gen_table, spec=None, paper_text="some text",
         )
         assert verification.grade == ReplicationGrade.B
         assert judge._call_llm.call_count == 2
@@ -1450,7 +1434,7 @@ class TestJudge:
         )
         judge._call_llm = MagicMock(return_value="not json")
         verification, analysis = judge._judge_table(
-            gen_table, spec=None, paper_text="some text", repl_code="x=1", pkg_code=None,
+            gen_table, spec=None, paper_text="some text",
         )
         assert verification.grade == ReplicationGrade.F
         assert verification.judge_error is True
@@ -1517,25 +1501,6 @@ class TestJudge:
         judge = Judge(provider="openai", model="gpt-4o", api_key="fake")
         with pytest.raises(ValueError, match="No JSON found"):
             judge._parse_json("not json at all")
-
-    def test_find_code(self, sample_replication_results):
-        sample_replication_results.code_files[0].description = "Table 1 regression"
-        result = Judge._find_code(sample_replication_results, "Table 1")
-        assert "print('hello')" in result
-
-    def test_find_code_missing(self, sample_replication_results):
-        result = Judge._find_code(sample_replication_results, "Table 99")
-        assert result == "Code not found"
-
-    def test_find_package_code(self):
-        package = {"files": {"table1.do": "reg y x\n* Table 1", "setup.do": "clear all"}}
-        result = Judge._find_package_code(package, "Table 1")
-        assert result is not None
-        assert "reg y x" in result
-
-    def test_find_package_code_none(self):
-        result = Judge._find_package_code(None, "Table 1")
-        assert result is None
 
     def test_generate_recommendations(self):
         analyses = [

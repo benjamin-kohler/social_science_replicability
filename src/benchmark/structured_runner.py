@@ -9,7 +9,6 @@ from pathlib import Path
 
 from ..models.config import Config, LangGraphConfig
 from ..models.schemas import PaperSummary
-from ..orchestrator import ReplicationOrchestrator
 from ..utils.logging_utils import get_logger
 from .base_runner import BaseReplicationRunner
 from .config import ModelSpec, PaperSpec
@@ -82,6 +81,7 @@ class StructuredRunner(BaseReplicationRunner):
         root_logger.addHandler(log_handler)
 
         try:
+            from ..orchestrator import ReplicationOrchestrator
             orchestrator = ReplicationOrchestrator(config=config)
             # Use run_replicate_only: replicator only sees methodology summary + data.
             # No paper PDF, no replication package, no judge step — judging is

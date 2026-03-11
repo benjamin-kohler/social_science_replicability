@@ -35,6 +35,17 @@ class JudgeConfig(BaseModel):
     provider: str = Field(default="openai", description="LLM provider for the judge")
     model_name: str = Field(default="gpt-4o", description="Model name for the judge")
     use_vision: bool = Field(default=True, description="Use vision for figure comparison")
+    comparator_cli_tool: str = Field(
+        default="claude-code",
+        description="CLI tool for table comparison: 'claude-code' or 'codex'",
+    )
+    comparator_model: str = Field(
+        default="claude-sonnet-4-6",
+        description="Model for the comparator CLI agent",
+    )
+    comparator_timeout: int = Field(
+        default=300, description="Timeout in seconds for comparator CLI runs",
+    )
 
 
 class ExtractorConfig(BaseModel):

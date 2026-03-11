@@ -18,16 +18,22 @@ from typing import Any, Literal, Optional
 from pydantic import BaseModel, Field
 
 from ..models.schemas import (
+    CellComparison,
     DiscrepancyAnalysis,
     ExplanationReport,
+    ExtractedTable,
     ItemVerification,
+    PaperResults,
     PaperSummary,
     ReplicationGrade,
     ReplicationResults,
+    TableComparison,
     VerificationReport,
 )
 from ..utils.logging_utils import get_logger
 from ..utils.pdf_parser import extract_text_from_pdf, pdf_to_base64_images
+from .comparator import ComparatorAgent
+from .grader import grade_table
 
 logger = get_logger(__name__)
 
@@ -35,12 +41,6 @@ logger = get_logger(__name__)
 # ---------------------------------------------------------------------------
 # Structured-output Pydantic models (used by OpenAI responses.parse)
 # ---------------------------------------------------------------------------
-
-class NumericalDifferences(BaseModel):
-    """Quantified differences between original and replicated results."""
-    max_difference_percent: float = Field(description="Maximum percentage difference")
-    key_differences: list[str] = Field(description="List of specific differences")
-
 
 class DiscrepancyDetail(BaseModel):
     """Explanation of a discrepancy between original and replicated results."""
@@ -51,21 +51,12 @@ class DiscrepancyDetail(BaseModel):
         description="One of: replicator, original_paper, unclear, data_limitation",
     )
     confidence: str = Field(description="One of: high, medium, low")
-    supporting_evidence: str = Field(description="Evidence from code comparison or paper")
-
-
-class TableJudgment(BaseModel):
-    """Structured judge output for a table replication."""
-    grade: Literal["A", "B", "C", "D", "F"] = Field(description="Replication grade")
-    comparison_notes: str = Field(description="Detailed comparison of the results")
-    numerical_differences: NumericalDifferences
-    key_findings_match: bool
-    discrepancy: DiscrepancyDetail
+    supporting_evidence: str = Field(description="Evidence from paper or visual comparison")
 
 
 class FigureJudgment(BaseModel):
     """Structured judge output for a figure replication."""
-    grade: Literal["A", "B", "C", "D", "F"] = Field(description="Replication grade")
+    grade: Literal["A", "B", "C", "D", "E", "F"] = Field(description="Replication grade")
     comparison_notes: str = Field(description="Detailed comparison assessment")
     key_findings_match: bool
     discrepancy: DiscrepancyDetail
@@ -77,14 +68,14 @@ class FigureJudgment(BaseModel):
 
 JUDGE_SYSTEM_PROMPT = """You are an expert judge evaluating research replication quality.
 
-You compare a replicated result against the original paper, grade the replication,
-and explain any discrepancies — all in a single assessment.
+You compare a replicated result against the original paper and grade the replication.
 
 Grading Scale:
 - A: Fully replicated. Results match within numerical precision (< 1% difference).
 - B: Same direction of effects with small discrepancies (1-5% difference).
-- C: Same direction of effects with large discrepancies (5-20% difference).
-- D: Results differ meaningfully — different significance, direction, or magnitude.
+- C: Same direction of effects with moderate discrepancies (5-20% difference).
+- D: Same direction but large discrepancies (20-50% difference).
+- E: Results differ meaningfully — different significance, direction, or >50% magnitude difference.
 - F: Not comparable — missing output, incompatible format, or unable to verify.
 
 Context:
@@ -92,59 +83,12 @@ Context:
   replication code. The replicator received only a methodological summary (extracted from
   the paper) and the dataset, and had to reconstruct all analyses from that description alone.
 - Some discrepancies may therefore stem from ambiguity in the methodology description rather
-  than errors by the replicator. When attributing fault, distinguish between:
-  (a) clear replicator errors (e.g., wrong dataset, coding bugs, flipped signs despite clear
-      definitions), and
-  (b) underspecified methodology (e.g., control variable lists referenced but not provided,
-      sign conventions not stated, sample selection criteria ambiguous).
+  than errors by the replicator.
 
 Important:
 - Focus on SUBSTANCE, not formatting or presentation.
-- Compare coefficients, standard errors, significance levels, and key statistics.
 - For figures, compare patterns and trends, not exact visual appearance.
-- Note any differences in sample size or methodology that could explain discrepancies.
-- When comparing with the replication package code, identify whether discrepancies
-  come from the replicator's approach vs. ambiguity in the methodology description."""
-
-TABLE_JUDGE_PROMPT = """Judge the replication of {item_id}.
-
-## Original Paper (relevant pages):
-{paper_pages}
-
-## Expected Table Structure (from methodology summary):
-{template}
-
-## Replicated Output (CSV data):
-{replicated_data}
-
-## Replication Code Used:
-{replication_code}
-
-## Original Replication Package Code:
-{package_code}
-
-Compare the replicated output against the original paper. Then:
-1. Assign a grade (A/B/C/D/F) based on how well the results match.
-2. If the grade is NOT A, explain the discrepancy and attribute fault.
-
-Respond with ONLY this JSON (no other text):
-{{
-    "grade": "A/B/C/D/F",
-    "comparison_notes": "Detailed comparison of the results",
-    "numerical_differences": {{
-        "max_difference_percent": 0.0,
-        "key_differences": ["list of specific differences"]
-    }},
-    "key_findings_match": true,
-    "discrepancy": {{
-        "description": "What differs (empty string if grade A)",
-        "likely_causes": ["ordered list of possible causes"],
-        "is_identifiable": true,
-        "fault_attribution": "replicator/original_paper/unclear/data_limitation",
-        "confidence": "high/medium/low",
-        "supporting_evidence": "Evidence from code comparison or paper"
-    }}
-}}"""
+- Note any differences in sample size or methodology that could explain discrepancies."""
 
 FIGURE_JUDGE_PROMPT = """Judge the replication of {item_id}.
 
@@ -159,21 +103,15 @@ FIGURE_JUDGE_PROMPT = """Judge the replication of {item_id}.
 - Grouping: {grouping}
 - Subplots: {subplots}
 
-## Replication Code Used:
-{replication_code}
-
-## Original Replication Package Code:
-{package_code}
-
 {vision_note}
 
-Compare the replicated figure against the original paper description. Then:
-1. Assign a grade (A/B/C/D/F) based on how well the results match.
+Compare the replicated figure against the original paper. Then:
+1. Assign a grade (A/B/C/D/E/F) based on how well the results match.
 2. If the grade is NOT A, explain the discrepancy and attribute fault.
 
 Respond with ONLY this JSON (no other text):
 {{
-    "grade": "A/B/C/D/F",
+    "grade": "A/B/C/D/E/F",
     "comparison_notes": "Detailed comparison assessment",
     "key_findings_match": true,
     "discrepancy": {{
@@ -182,7 +120,7 @@ Respond with ONLY this JSON (no other text):
         "is_identifiable": true,
         "fault_attribution": "replicator/original_paper/unclear/data_limitation",
         "confidence": "high/medium/low",
-        "supporting_evidence": "Evidence from code comparison or paper"
+        "supporting_evidence": "Evidence from paper or visual comparison"
     }}
 }}"""
 
@@ -212,11 +150,19 @@ class Judge:
     _REASONING_PREFIXES = ("o1", "o3", "o4", "gpt-5-mini", "gpt-5-nano", "gpt-5-pro", "gpt-5.2", "gpt-5.3")
     # All OpenAI calls use the Responses API
 
-    def __init__(self, provider: str, model: str, api_key: str, use_vision: bool = True):
+    def __init__(
+        self,
+        provider: str,
+        model: str,
+        api_key: str,
+        use_vision: bool = True,
+        comparator: ComparatorAgent | None = None,
+    ):
         self.provider = provider.lower()
         self.model = model
         self.api_key = api_key
         self.use_vision = use_vision
+        self._comparator = comparator
         self._client: Any = None
         self._usage: list[dict] = []  # per-call token usage log
         self._is_reasoning = any(model.startswith(p) for p in self._REASONING_PREFIXES)
@@ -488,9 +434,18 @@ class Judge:
         paper_path: str,
         paper_summary: PaperSummary,
         replication_results: ReplicationResults,
+        paper_results: PaperResults | None = None,
         replication_package_path: str | None = None,
     ) -> tuple[VerificationReport, ExplanationReport | None]:
         """Judge all replicated items.
+
+        Args:
+            paper_path: Path to the original paper PDF.
+            paper_summary: Methodology summary.
+            replication_results: Replicated outputs to judge.
+            paper_results: Extracted original table values (for programmatic
+                comparison). If None, tables fall back to LLM-only judging.
+            replication_package_path: Deprecated, kept for backward compat. Ignored.
 
         Returns:
             (VerificationReport, ExplanationReport or None if all grades are A).
@@ -498,7 +453,6 @@ class Judge:
         logger.info(f"Judging replication for: {replication_results.paper_id}")
 
         paper_text = extract_text_from_pdf(paper_path)
-        package = self._load_replication_package(replication_package_path)
 
         # Convert paper PDF to page images once (used for vision calls)
         page_images: list[dict] = []
@@ -516,27 +470,25 @@ class Judge:
         item_verifications: list[ItemVerification] = []
         discrepancy_analyses: list[DiscrepancyAnalysis] = []
 
-        # Judge tables
+        # Judge tables (programmatic via comparator if paper_results available)
         for gen_table in replication_results.tables:
             spec = table_specs.get(gen_table.table_number)
-            repl_code = self._find_code(replication_results, gen_table.table_number)
-            pkg_code = self._find_package_code(package, gen_table.table_number)
+            original_table = paper_results.get_table(gen_table.table_number) if paper_results else None
 
             verification, analysis = self._judge_table(
-                gen_table, spec, paper_text, repl_code, pkg_code, page_images,
+                gen_table, spec, paper_text, page_images,
+                original_table=original_table,
             )
             item_verifications.append(verification)
             if analysis:
                 discrepancy_analyses.append(analysis)
 
-        # Judge figures
+        # Judge figures (LLM vision — unchanged)
         for gen_figure in replication_results.figures:
             spec = figure_specs.get(gen_figure.figure_number)
-            repl_code = self._find_code(replication_results, gen_figure.figure_number)
-            pkg_code = self._find_package_code(package, gen_figure.figure_number)
 
             verification, analysis = self._judge_figure(
-                gen_figure, spec, paper_text, repl_code, pkg_code, page_images,
+                gen_figure, spec, paper_text, page_images,
             )
             item_verifications.append(verification)
             if analysis:
@@ -575,11 +527,15 @@ class Judge:
         gen_table,
         spec,
         paper_text: str,
-        repl_code: str,
-        pkg_code: str | None,
         page_images: list[dict] | None = None,
+        original_table: ExtractedTable | None = None,
     ) -> tuple[ItemVerification, DiscrepancyAnalysis | None]:
-        """Judge a single table."""
+        """Judge a single table.
+
+        If original_table (from ResultsExtractor) and a comparator are available,
+        uses programmatic cell-by-cell comparison. Otherwise falls back to the
+        LLM-based approach (deprecated path for backward compat).
+        """
         item_id = gen_table.table_number
         logger.info(f"Judging {item_id}")
 
@@ -595,18 +551,151 @@ class Judge:
                 None,
             )
 
+        # --- Comparator path (preferred) ---
+        if original_table and original_table.cells and self._comparator:
+            return self._judge_table_comparator(
+                gen_table, original_table, item_id,
+            )
+
+        # --- Fallback: LLM-only judging (no extracted results available) ---
+        logger.warning(f"No extracted original values for {item_id}, using LLM-only judging")
+        return self._judge_table_llm_fallback(
+            gen_table, spec, paper_text, page_images,
+        )
+
+    def _judge_table_comparator(
+        self,
+        gen_table,
+        original_table: ExtractedTable,
+        item_id: str,
+    ) -> tuple[ItemVerification, DiscrepancyAnalysis | None]:
+        """Judge a table using the Comparator Agent for cell-by-cell comparison."""
+        try:
+            # Convert replicated table data to CSV string
+            import pandas as pd
+            import io
+
+            data = gen_table.data
+            if isinstance(data, dict):
+                # pandas JSON orient="split" format
+                if "columns" in data and "data" in data:
+                    df = pd.DataFrame(**{k: data[k] for k in ("columns", "data", "index") if k in data})
+                else:
+                    df = pd.DataFrame(data)
+            else:
+                df = pd.DataFrame(data)
+
+            csv_buffer = io.StringIO()
+            df.to_csv(csv_buffer, index=True)
+            replicated_csv = csv_buffer.getvalue()
+
+            # Run comparator (objective metrics only)
+            comparison = self._comparator.compare_table(original_table, replicated_csv)
+
+            # Apply deterministic grading
+            comparison = grade_table(comparison)
+
+            # Convert overall grade to ReplicationGrade
+            try:
+                grade = ReplicationGrade(comparison.overall_grade)
+            except ValueError:
+                grade = ReplicationGrade.F
+
+            # Build numerical_differences dict for backward compat
+            num_diffs = {}
+            if comparison.cell_comparisons:
+                pct_diffs = [
+                    c.percent_difference for c in comparison.cell_comparisons
+                    if c.percent_difference is not None
+                ]
+                if pct_diffs:
+                    num_diffs = {
+                        "max_difference_percent": max(pct_diffs),
+                        "mean_difference_percent": sum(pct_diffs) / len(pct_diffs),
+                        "num_cells_compared": len(comparison.cell_comparisons),
+                    }
+
+            verification = ItemVerification(
+                item_id=item_id,
+                item_type="table",
+                grade=grade,
+                comparison_notes=comparison.summary,
+                numerical_differences=num_diffs or None,
+                key_findings_match=grade in (ReplicationGrade.A, ReplicationGrade.B),
+                table_comparison=comparison,
+            )
+
+            analysis = None
+            if grade != ReplicationGrade.A:
+                analysis = DiscrepancyAnalysis(
+                    item_id=item_id,
+                    grade=grade,
+                    description_of_discrepancy=comparison.summary,
+                    likely_causes=[comparison.alignment_notes] if comparison.alignment_notes else [],
+                    is_identifiable=True,
+                    fault_attribution="unclear",
+                    confidence="medium",
+                    supporting_evidence=f"Cell-by-cell comparison: {len(comparison.cell_comparisons)} cells compared",
+                )
+
+            return verification, analysis
+
+        except Exception as e:
+            logger.error(f"Comparator failed for {item_id}: {e}")
+            return (
+                ItemVerification(
+                    item_id=item_id, item_type="table",
+                    grade=ReplicationGrade.F,
+                    comparison_notes=f"Comparator error: {e}",
+                    judge_error=True,
+                ),
+                None,
+            )
+
+    def _judge_table_llm_fallback(
+        self,
+        gen_table,
+        spec,
+        paper_text: str,
+        page_images: list[dict] | None = None,
+    ) -> tuple[ItemVerification, DiscrepancyAnalysis | None]:
+        """Fallback: judge a table using LLM when no extracted values are available."""
+        item_id = gen_table.table_number
+
         paper_pages = self._extract_table_pages(paper_text, item_id)
         template = spec.template_markdown if spec and spec.template_markdown else "Not available"
         replicated_data = json.dumps(gen_table.data, indent=2)[:5000]
 
-        prompt = TABLE_JUDGE_PROMPT.format(
-            item_id=item_id,
-            paper_pages=paper_pages[:8000],
-            template=template[:3000],
-            replicated_data=replicated_data,
-            replication_code=repl_code[:3000],
-            package_code=pkg_code[:3000] if pkg_code else "Not available",
-        )
+        # Simplified prompt without code
+        prompt = f"""Judge the replication of {item_id}.
+
+## Original Paper (relevant pages):
+{paper_pages[:8000]}
+
+## Expected Table Structure (from methodology summary):
+{template[:3000]}
+
+## Replicated Output (CSV data):
+{replicated_data}
+
+Compare the replicated output against the original paper. Then:
+1. Assign a grade (A/B/C/D/E/F) based on how well the results match.
+2. If the grade is NOT A, explain the discrepancy.
+
+Respond with ONLY this JSON (no other text):
+{{
+    "grade": "A/B/C/D/E/F",
+    "comparison_notes": "Detailed comparison of the results",
+    "key_findings_match": true,
+    "discrepancy": {{
+        "description": "What differs (empty string if grade A)",
+        "likely_causes": ["ordered list of possible causes"],
+        "is_identifiable": true,
+        "fault_attribution": "replicator/original_paper/unclear/data_limitation",
+        "confidence": "high/medium/low",
+        "supporting_evidence": "Evidence from paper"
+    }}
+}}"""
 
         # Select relevant page images for this table
         item_page_images: list[dict] = []
@@ -616,10 +705,9 @@ class Judge:
 
         try:
             if item_page_images and self.use_vision:
-                # Vision: send paper page images so the LLM can see the original table
                 if self.provider in _STRUCTURED_PROVIDERS:
                     parsed = self._call_llm_vision_multi_structured(
-                        JUDGE_SYSTEM_PROMPT, prompt, item_page_images, TableJudgment,
+                        JUDGE_SYSTEM_PROMPT, prompt, item_page_images, FigureJudgment,
                     )
                     resp = parsed.model_dump()
                 else:
@@ -628,10 +716,9 @@ class Judge:
                     )
                     resp = self._parse_json(raw)
             else:
-                # Text-only fallback
                 if self.provider in _STRUCTURED_PROVIDERS:
                     parsed = self._call_llm_structured(
-                        JUDGE_SYSTEM_PROMPT, prompt, TableJudgment,
+                        JUDGE_SYSTEM_PROMPT, prompt, FigureJudgment,
                     )
                     resp = parsed.model_dump()
                 else:
@@ -654,11 +741,9 @@ class Judge:
         gen_figure,
         spec,
         paper_text: str,
-        repl_code: str,
-        pkg_code: str | None,
         page_images: list[dict] | None = None,
     ) -> tuple[ItemVerification, DiscrepancyAnalysis | None]:
-        """Judge a single figure."""
+        """Judge a single figure using LLM vision comparison."""
         item_id = gen_figure.figure_number
         logger.info(f"Judging {item_id}")
 
@@ -696,8 +781,6 @@ class Judge:
             y_axis=spec.y_axis if spec else "Unknown",
             grouping=", ".join(spec.grouping_vars) if spec and spec.grouping_vars else "None",
             subplots=spec.subplot_structure if spec and spec.subplot_structure else "None",
-            replication_code=repl_code[:3000],
-            package_code=pkg_code[:3000] if pkg_code else "Not available",
             vision_note="The replicated figure image and original paper pages are attached for visual comparison.",
         )
 
@@ -802,60 +885,20 @@ class Judge:
 
     @staticmethod
     def _find_item_pages(paper_text: str, item_id: str) -> list[int]:
-        """Find page numbers (1-indexed) mentioning an item, plus neighbours."""
-        pages = re.split(r"\n--- Page (\d+) ---\n", paper_text)
-        page_map: dict[int, str] = {}
-        for i in range(1, len(pages) - 1, 2):
-            try:
-                page_map[int(pages[i])] = pages[i + 1]
-            except (ValueError, IndexError):
-                continue
-
-        matching: list[int] = []
-        for pnum, ptext in page_map.items():
-            if re.search(re.escape(item_id), ptext, re.IGNORECASE):
-                matching.append(pnum)
-
-        if not matching:
-            num_part = item_id.replace("Table ", "").replace("Figure ", "")
-            for pnum, ptext in page_map.items():
-                if re.search(rf"(?:Table|Figure|table|figure)\s*{re.escape(num_part)}", ptext):
-                    matching.append(pnum)
-
-        if not matching:
-            return []
-
-        all_pages: set[int] = set()
-        for p in matching:
-            all_pages.update(range(max(1, p - 1), p + 2))
-
-        return sorted(p for p in all_pages if p in page_map)
+        from .pdf_page_utils import find_item_pages
+        return find_item_pages(paper_text, item_id)
 
     @staticmethod
     def _extract_table_pages(paper_text: str, item_id: str) -> str:
-        """Find PDF pages mentioning this item and return surrounding text context."""
-        pages = re.split(r"\n--- Page (\d+) ---\n", paper_text)
-        page_map: dict[int, str] = {}
-        for i in range(1, len(pages) - 1, 2):
-            try:
-                page_map[int(pages[i])] = pages[i + 1]
-            except (ValueError, IndexError):
-                continue
-
-        page_nums = Judge._find_item_pages(paper_text, item_id)
-        parts = []
-        for p in page_nums:
-            if p in page_map:
-                parts.append(f"--- Page {p} ---\n{page_map[p]}")
-        return "\n".join(parts)
+        from .pdf_page_utils import extract_table_pages
+        return extract_table_pages(paper_text, item_id)
 
     @staticmethod
     def _select_page_images(
         page_images: list[dict], page_nums: list[int],
     ) -> list[dict]:
-        """Select page images by page number."""
-        by_page = {img["page"]: img for img in page_images}
-        return [by_page[p] for p in page_nums if p in by_page]
+        from .pdf_page_utils import select_page_images
+        return select_page_images(page_images, page_nums)
 
     @staticmethod
     def _calculate_overall_grade(
@@ -873,16 +916,18 @@ class Judge:
         ]
         if not grades:
             return ReplicationGrade.F
-        values = {"A": 4, "B": 3, "C": 2, "D": 1, "F": 0}
+        values = {"A": 5, "B": 4, "C": 3, "D": 2, "E": 1, "F": 0}
         avg = sum(values[g.value] for g in grades) / len(grades)
-        if avg >= 3.5:
+        if avg >= 4.5:
             return ReplicationGrade.A
-        if avg >= 2.5:
+        if avg >= 3.5:
             return ReplicationGrade.B
-        if avg >= 1.5:
+        if avg >= 2.5:
             return ReplicationGrade.C
-        if avg >= 0.5:
+        if avg >= 1.5:
             return ReplicationGrade.D
+        if avg >= 0.5:
+            return ReplicationGrade.E
         return ReplicationGrade.F
 
     @staticmethod
@@ -899,7 +944,7 @@ class Judge:
             f"Total items verified: {len(verifications)}",
             "Grade distribution:",
         ]
-        for g in ["A", "B", "C", "D", "F"]:
+        for g in ["A", "B", "C", "D", "E", "F"]:
             if g in counts:
                 parts.append(f"  - Grade {g}: {counts[g]} items")
 
@@ -915,63 +960,13 @@ class Judge:
             for v in judge_errors:
                 parts.append(f"  - {v.item_id}: {v.comparison_notes[:100]}...")
 
-        issues = [v for v in verifications if v.grade.value in ("D", "F") and not v.judge_error and not v.unverifiable]
+        issues = [v for v in verifications if v.grade.value in ("D", "E", "F") and not v.judge_error and not v.unverifiable]
         if issues:
             parts.append("\nItems with significant issues:")
             for v in issues:
                 parts.append(f"  - {v.item_id}: {v.comparison_notes[:100]}...")
 
         return "\n".join(parts)
-
-    @staticmethod
-    def _load_replication_package(path: str | None) -> dict | None:
-        """Load and index the original replication package code files."""
-        if not path:
-            return None
-        pkg_dir = Path(path)
-        if not pkg_dir.exists():
-            logger.warning(f"Replication package not found: {path}")
-            return None
-
-        files: dict[str, str] = {}
-        for ext in (".py", ".r", ".R", ".do", ".sas", ".m"):
-            for f in pkg_dir.rglob(f"*{ext}"):
-                try:
-                    files[str(f.relative_to(pkg_dir))] = f.read_text()
-                except Exception as e:
-                    logger.warning(f"Could not read {f}: {e}")
-
-        logger.info(f"Loaded {len(files)} files from replication package")
-        return {"path": path, "files": files}
-
-    @staticmethod
-    def _find_code(results: ReplicationResults, item_id: str) -> str:
-        """Find the replication code for a specific item.
-
-        Matches flexibly: 'Table 1' matches 'table_1.py', 'Code for Table 1', etc.
-        """
-        item_lower = item_id.lower()
-        # Normalize to match underscored filenames: "table 1" -> "table_1"
-        item_underscored = item_lower.replace(" ", "_")
-        for code in results.code_files:
-            if not code.description:
-                continue
-            desc_lower = code.description.lower()
-            if item_lower in desc_lower or item_underscored in desc_lower:
-                return code.code
-        return "Code not found"
-
-    @staticmethod
-    def _find_package_code(package: dict | None, item_id: str) -> str | None:
-        """Find code from the replication package relevant to an item."""
-        if not package:
-            return None
-        item_lower = item_id.lower()
-        relevant = []
-        for filename, content in package.get("files", {}).items():
-            if item_lower in content.lower():
-                relevant.append(f"--- {filename} ---\n{content}")
-        return "\n\n".join(relevant) if relevant else None
 
     @staticmethod
     def _generate_overall_assessment(

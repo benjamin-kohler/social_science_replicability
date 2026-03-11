@@ -36,7 +36,7 @@ class TestReplicationOrchestrator:
     @patch("src.orchestrator.ExtractorAgent")
     def test_run_extraction_only(self, mock_ext, config, paper_summary):
         mock_ext_instance = MagicMock()
-        mock_ext_instance.run.return_value = paper_summary
+        mock_ext_instance.run.return_value = (paper_summary, {})
         mock_ext.return_value = mock_ext_instance
 
         orch = ReplicationOrchestrator(config=config)
@@ -77,8 +77,9 @@ class TestReplicationOrchestrator:
         # Disable intermediate saves to simplify test
         config.output.save_intermediate_results = False
 
-        mock_ext.return_value.run.return_value = paper_summary
+        mock_ext.return_value.run.return_value = (paper_summary, {})
         mock_rep.return_value.run.return_value = replication_results
+        mock_rep.return_value.usage_summary = {"num_calls": 0, "total_tokens": 0}
         explanation = ExplanationReport(
             paper_id="test_paper_2024",
             analyses=[],
@@ -115,7 +116,7 @@ class TestReplicationOrchestrator:
     ):
         config.output.save_intermediate_results = False
 
-        mock_ext.return_value.run.return_value = paper_summary
+        mock_ext.return_value.run.return_value = (paper_summary, {})
         mock_rep.return_value.run.side_effect = Exception("Code execution failed")
 
         orch = ReplicationOrchestrator(config=config)
@@ -139,7 +140,7 @@ class TestReplicationOrchestrator:
     ):
         config.output.save_intermediate_results = True
 
-        mock_ext.return_value.run.return_value = paper_summary
+        mock_ext.return_value.run.return_value = (paper_summary, {})
         mock_rep.return_value.run.side_effect = Exception("fail")
 
         orch = ReplicationOrchestrator(config=config)
@@ -171,6 +172,7 @@ class TestReplicationOrchestrator:
         config.output.save_intermediate_results = False
 
         mock_rep.return_value.run.return_value = replication_results
+        mock_rep.return_value.usage_summary = {"num_calls": 0, "total_tokens": 0}
         explanation = ExplanationReport(
             paper_id="test_paper_2024",
             analyses=[],

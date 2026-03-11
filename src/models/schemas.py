@@ -237,6 +237,124 @@ class ReplicationResults(BaseModel):
 
 
 # =============================================================================
+# Results Extraction: PaperResults (original table values from the paper)
+# =============================================================================
+
+
+class CellValue(BaseModel):
+    """A single cell extracted from an original paper table."""
+
+    row_label: str = Field(..., description="Row label as it appears in the paper")
+    column_label: str = Field(..., description="Column label as it appears in the paper")
+    raw_text: str = Field(..., description="Exact text as it appears in the paper cell")
+    numeric_value: Optional[float] = Field(
+        default=None, description="Parsed numeric value (None if non-numeric)"
+    )
+    is_standard_error: bool = Field(
+        default=False, description="True if this is a standard error in parentheses"
+    )
+    significance_stars: int = Field(
+        default=0, description="Number of significance stars (0, 1, 2, or 3)"
+    )
+    significance_level: Optional[float] = Field(
+        default=None,
+        description="Inferred significance level: 0.1, 0.05, 0.01, or None",
+    )
+    is_string: bool = Field(
+        default=False, description="True if cell is non-numeric text (Yes/No/checkmark)"
+    )
+    row_type: str = Field(
+        default="coefficient",
+        description="One of: coefficient, se, statistic, string, panel_header",
+    )
+
+
+class ExtractedTable(BaseModel):
+    """Complete extracted values for one table from the original paper."""
+
+    table_id: str = Field(..., description="Table identifier matching PaperSummary (e.g., 'Table 1')")
+    column_labels: list[str] = Field(default_factory=list, description="Ordered column headers")
+    row_labels: list[str] = Field(default_factory=list, description="Ordered row labels")
+    cells: list[CellValue] = Field(default_factory=list, description="All extracted cell values")
+    significance_convention: Optional[str] = Field(
+        default=None, description="E.g., '*** p<0.01, ** p<0.05, * p<0.1'"
+    )
+    notes: Optional[str] = Field(default=None, description="Any extraction notes or warnings")
+
+
+class PaperResults(BaseModel):
+    """All extracted numeric results from the original paper.
+
+    Produced once per paper by the ResultsExtractor. Cached alongside PaperSummary.
+    """
+
+    paper_id: str = Field(..., description="Paper identifier")
+    tables: list[ExtractedTable] = Field(default_factory=list, description="Extracted table values")
+    extraction_model: str = Field(..., description="Model used for extraction")
+    extraction_timestamp: Optional[str] = Field(default=None)
+
+    def get_table(self, table_id: str) -> Optional["ExtractedTable"]:
+        """Look up an extracted table by ID."""
+        for t in self.tables:
+            if t.table_id == table_id:
+                return t
+        return None
+
+
+# =============================================================================
+# Table Comparison: Cell-level comparison results
+# =============================================================================
+
+
+class CellComparison(BaseModel):
+    """Comparison result for a single cell."""
+
+    row_label: str = Field(..., description="Row label")
+    column_label: str = Field(..., description="Column label")
+    original_value: Optional[float] = Field(default=None, description="Original numeric value")
+    replicated_value: Optional[float] = Field(default=None, description="Replicated numeric value")
+    absolute_difference: Optional[float] = Field(default=None, description="|replicated - original|")
+    percent_difference: Optional[float] = Field(default=None, description="Percentage difference")
+    sign_match: Optional[bool] = Field(default=None, description="Whether signs match")
+    grade: str = Field(default="F", description="Per-cell grade A-F")
+    note: str = Field(default="", description="Explanation for this cell's grade")
+
+
+class TableComparison(BaseModel):
+    """Complete cell-by-cell comparison for one table."""
+
+    table_id: str = Field(..., description="Table identifier")
+    cell_comparisons: list[CellComparison] = Field(
+        default_factory=list, description="All cell comparisons"
+    )
+    overall_grade: str = Field(default="F", description="Overall table grade A-F")
+    summary: str = Field(default="", description="Comparison summary")
+    alignment_notes: str = Field(
+        default="", description="Notes on how rows/columns were aligned"
+    )
+    scale_factor: Optional[float] = Field(
+        default=None,
+        description="Global scale factor applied to replicated values (e.g. 100.0 if "
+        "replicated was in proportions and original in %). None if no rescaling.",
+    )
+    scale_note: str = Field(
+        default="", description="Explanation of any global rescaling applied"
+    )
+    row_scale_factors: dict[str, float] = Field(
+        default_factory=dict,
+        description="Per-row scale factors applied after global rescaling. "
+        "Keys are row labels, values are the scale factor for that row.",
+    )
+    row_scale_notes: dict[str, str] = Field(
+        default_factory=dict,
+        description="Explanation for each per-row scale factor.",
+    )
+    comparison_code: str = Field(
+        default="", description="Python code used to compute the comparison"
+    )
+
+
+# =============================================================================
 # Agent 3 Output: VerificationReport
 # =============================================================================
 
@@ -244,10 +362,11 @@ class ReplicationResults(BaseModel):
 class ReplicationGrade(str, Enum):
     """Grading scale for replication quality."""
 
-    A = "A"  # Fully replicated the results
-    B = "B"  # Same direction, small discrepancies (<5% difference)
-    C = "C"  # Same direction, large discrepancies (>5% difference)
-    D = "D"  # Different results, opposite direction or non-significant
+    A = "A"  # Fully replicated (<1% difference)
+    B = "B"  # Same direction, small discrepancies (1-5%)
+    C = "C"  # Same direction, moderate discrepancies (5-20%)
+    D = "D"  # Same direction, large discrepancies (20-50%)
+    E = "E"  # Different sign, significance, or >50% difference
     F = "F"  # Not comparable (missing output or incompatible format)
 
 
@@ -263,6 +382,9 @@ class ItemVerification(BaseModel):
     )
     key_findings_match: Optional[bool] = Field(
         default=None, description="Whether key findings/conclusions match"
+    )
+    table_comparison: Optional[TableComparison] = Field(
+        default=None, description="Cell-by-cell comparison detail (tables only)"
     )
     judge_error: bool = Field(
         default=False,
