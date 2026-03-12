@@ -103,6 +103,11 @@ class BenchmarkRunner:
                 timeout=config.timeout_seconds,
                 allow_web_access=config.allow_web_access,
             ),
+            "opencode": OpencodeRunner(
+                opencode_binary=config.opencode_binary,
+                timeout=config.timeout_seconds,
+                allow_web_access=config.allow_web_access,
+            ),
         }
 
         self._summary_cache: dict[str, PaperSummary] = {}
