@@ -415,12 +415,13 @@ class TestOpencodeRunner:
             runner.run(model_spec, paper_spec, paper_summary, workspace)
 
         claude_md = workspace / "CLAUDE.md"
+        agents_md = workspace / "AGENTS.md"
         assert claude_md.exists()
-        content = claude_md.read_text()
-        assert "ONLY read and write files inside this directory" in content
+        assert agents_md.exists()
+        assert "TASK.md" in claude_md.read_text()
 
     def test_task_md_contains_constraints(self, tmp_path, model_spec, paper_spec, paper_summary):
-        """TASK.md must contain the mandatory constraints section."""
+        """TASK.md must contain the constraints section."""
         runner = OpencodeRunner(opencode_binary="opencode", timeout=30)
 
         with patch("subprocess.run") as mock_run:
@@ -430,8 +431,8 @@ class TestOpencodeRunner:
 
         content = (workspace / "TASK.md").read_text()
         assert "Constraints" in content
-        assert "NO searching for the paper" in content
-        assert "NO searching for results" in content
+        assert "No searching for the paper" in content
+        assert "No searching for results" in content
 
 
 # =============================================================================
@@ -942,13 +943,13 @@ class TestClaudeCodeRunner:
             runner.run(model_spec, paper_spec, paper_summary, workspace)
 
         claude_md = workspace / "CLAUDE.md"
+        agents_md = workspace / "AGENTS.md"
         assert claude_md.exists()
-        content = claude_md.read_text()
-        assert "ONLY read and write files inside this directory" in content
-        assert "Do NOT search for this paper" in content
+        assert agents_md.exists()
+        assert "TASK.md" in claude_md.read_text()
 
     def test_task_md_contains_constraints(self, tmp_path, model_spec, paper_spec, paper_summary):
-        """TASK.md must contain the mandatory constraints section."""
+        """TASK.md must contain the constraints section."""
         runner = ClaudeCodeRunner(claude_binary="claude", timeout=30)
 
         with patch("src.benchmark.claude_code_runner.subprocess.run") as mock_run:
@@ -958,9 +959,9 @@ class TestClaudeCodeRunner:
 
         content = (workspace / "TASK.md").read_text()
         assert "Constraints" in content
-        assert "workspace only" in content
-        assert "NO searching for the paper" in content
-        assert "NO searching for results" in content
+        assert "Workspace only" in content
+        assert "No searching for the paper" in content
+        assert "No searching for results" in content
 
     def test_extract_usage_from_json(self):
         """_extract_usage parses token data from Claude Code result event."""
@@ -1169,7 +1170,7 @@ class TestCodexRunner:
         assert "sandbox_permissions=[]" in cmd[idx + 1]
 
     def test_writes_claude_md_with_constraints(self, tmp_path, model_spec, paper_spec, paper_summary):
-        """Workspace must contain CLAUDE.md with isolation constraints."""
+        """Workspace must contain CLAUDE.md and AGENTS.md."""
         runner = CodexRunner(codex_binary="codex", timeout=30)
 
         with patch("src.benchmark.codex_runner.subprocess.run") as mock_run:
@@ -1177,11 +1178,11 @@ class TestCodexRunner:
             workspace = tmp_path / "workspace"
             runner.run(model_spec, paper_spec, paper_summary, workspace)
 
-        claude_md = workspace / "CLAUDE.md"
-        assert claude_md.exists()
+        assert (workspace / "CLAUDE.md").exists()
+        assert (workspace / "AGENTS.md").exists()
 
     def test_task_md_contains_constraints(self, tmp_path, model_spec, paper_spec, paper_summary):
-        """TASK.md must contain the mandatory constraints section."""
+        """TASK.md must contain the constraints section."""
         runner = CodexRunner(codex_binary="codex", timeout=30)
 
         with patch("src.benchmark.codex_runner.subprocess.run") as mock_run:
@@ -1191,7 +1192,7 @@ class TestCodexRunner:
 
         content = (workspace / "TASK.md").read_text()
         assert "Constraints" in content
-        assert "NO searching for the paper" in content
+        assert "No searching for the paper" in content
 
     def test_parse_jsonl_with_usage(self):
         """_parse_jsonl_output extracts token usage from turn.completed events."""
@@ -1467,20 +1468,12 @@ class TestJudge:
                 "max_difference_percent": 15.0,
                 "key_differences": ["coefficient off by 15%"],
             },
-            "discrepancy": {
-                "description": "Coefficients differ by ~15%",
-                "likely_causes": ["Different standard error clustering"],
-                "is_identifiable": True,
-                "fault_attribution": "replicator",
-                "confidence": "medium",
-                "supporting_evidence": "Original uses robust SE",
-            },
         }
         verification, analysis = Judge._parse_judge_response(resp, "Table 2", "table")
         assert verification.grade == ReplicationGrade.C
         assert analysis is not None
-        assert analysis.fault_attribution == "replicator"
-        assert "Different standard error" in analysis.likely_causes[0]
+        assert analysis.description_of_discrepancy == "Large differences in coefficients"
+        assert analysis.fault_attribution == "unclear"
 
     def test_parse_json_plain(self):
         judge = Judge(provider="openai", model="gpt-4o", api_key="fake")

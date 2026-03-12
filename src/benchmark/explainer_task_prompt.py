@@ -311,8 +311,9 @@ def setup_explainer_workspace(
     )
     (workspace_dir / "TASK.md").write_text(task_prompt)
 
-    # --- Write CLAUDE.md ---
+    # --- Write workspace instructions as both CLAUDE.md and AGENTS.md ---
     (workspace_dir / "CLAUDE.md").write_text(EXPLAINER_CLAUDE_MD)
+    (workspace_dir / "AGENTS.md").write_text(EXPLAINER_CLAUDE_MD)
 
     logger.info(
         f"Explainer workspace set up: {len(items_lines)} items to explain, "

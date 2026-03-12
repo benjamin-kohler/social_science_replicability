@@ -42,86 +42,46 @@ logger = get_logger(__name__)
 # Structured-output Pydantic models (used by OpenAI responses.parse)
 # ---------------------------------------------------------------------------
 
-class DiscrepancyDetail(BaseModel):
-    """Explanation of a discrepancy between original and replicated results."""
-    description: str = Field(description="What differs (empty string if grade A)")
-    likely_causes: list[str] = Field(description="Ordered list of possible causes")
-    is_identifiable: bool = Field(description="Whether the cause can be identified")
-    fault_attribution: str = Field(
-        description="One of: replicator, original_paper, unclear, data_limitation",
-    )
-    confidence: str = Field(description="One of: high, medium, low")
-    supporting_evidence: str = Field(description="Evidence from paper or visual comparison")
-
-
 class FigureJudgment(BaseModel):
     """Structured judge output for a figure replication."""
     grade: Literal["A", "B", "C", "D", "E", "F"] = Field(description="Replication grade")
-    comparison_notes: str = Field(description="Detailed comparison assessment")
-    key_findings_match: bool
-    discrepancy: DiscrepancyDetail
+    comparison_notes: str = Field(description="Detailed comparison of patterns, trends, and values")
+    key_findings_match: bool = Field(description="Whether the main patterns and trends match")
 
 
 # ---------------------------------------------------------------------------
 # Prompts
 # ---------------------------------------------------------------------------
 
-JUDGE_SYSTEM_PROMPT = """You are an expert judge evaluating research replication quality.
+JUDGE_SYSTEM_PROMPT = """You are a judge evaluating how closely a replicated result matches the original.
 
-You compare a replicated result against the original paper and grade the replication.
-
-Grading Scale:
-- A: Fully replicated. Results match within numerical precision (< 1% difference).
-- B: Same direction of effects with small discrepancies (1-5% difference).
-- C: Same direction of effects with moderate discrepancies (5-20% difference).
+Grading scale:
+- A: Results match within numerical precision (< 1% difference).
+- B: Same direction with small discrepancies (1-10% difference).
+- C: Same direction with moderate discrepancies (10-20% difference).
 - D: Same direction but large discrepancies (20-50% difference).
-- E: Results differ meaningfully — different significance, direction, or >50% magnitude difference.
+- E: Results differ meaningfully — different significance, direction, or >50% difference.
 - F: Not comparable — missing output, incompatible format, or unable to verify.
 
-Context:
-- The replication was performed WITHOUT access to the original paper's results or any
-  replication code. The replicator received only a methodological summary (extracted from
-  the paper) and the dataset, and had to reconstruct all analyses from that description alone.
-- Some discrepancies may therefore stem from ambiguity in the methodology description rather
-  than errors by the replicator.
+Focus on substance, not formatting or presentation. For figures, compare
+patterns and trends, not exact visual appearance."""
 
-Important:
-- Focus on SUBSTANCE, not formatting or presentation.
-- For figures, compare patterns and trends, not exact visual appearance.
-- Note any differences in sample size or methodology that could explain discrepancies."""
+FIGURE_JUDGE_PROMPT = """How closely does the replicated {item_id} match the original?
 
-FIGURE_JUDGE_PROMPT = """Judge the replication of {item_id}.
+{vision_note}
 
 ## Original Paper (relevant pages):
 {paper_pages}
 
-## Expected Figure Specification:
-- Caption: {caption}
-- Plot type: {plot_type}
-- X-axis: {x_axis}
-- Y-axis: {y_axis}
-- Grouping: {grouping}
-- Subplots: {subplots}
-
-{vision_note}
-
-Compare the replicated figure against the original paper. Then:
-1. Assign a grade (A/B/C/D/E/F) based on how well the results match.
-2. If the grade is NOT A, explain the discrepancy and attribute fault.
+Compare the replicated figure against the original. Assess whether the patterns,
+trends, axis ranges, and data values match. Assign a grade (A-F) based on the
+grading scale.
 
 Respond with ONLY this JSON (no other text):
 {{
     "grade": "A/B/C/D/E/F",
-    "comparison_notes": "Detailed comparison assessment",
-    "key_findings_match": true,
-    "discrepancy": {{
-        "description": "What differs (empty string if grade A)",
-        "likely_causes": ["ordered list of possible causes"],
-        "is_identifiable": true,
-        "fault_attribution": "replicator/original_paper/unclear/data_limitation",
-        "confidence": "high/medium/low",
-        "supporting_evidence": "Evidence from paper or visual comparison"
-    }}
+    "comparison_notes": "Detailed comparison of patterns, trends, and values",
+    "key_findings_match": true
 }}"""
 
 
@@ -667,7 +627,7 @@ class Judge:
         replicated_data = json.dumps(gen_table.data, indent=2)[:5000]
 
         # Simplified prompt without code
-        prompt = f"""Judge the replication of {item_id}.
+        prompt = f"""How closely does the replicated {item_id} match the original?
 
 ## Original Paper (relevant pages):
 {paper_pages[:8000]}
@@ -678,23 +638,14 @@ class Judge:
 ## Replicated Output (CSV data):
 {replicated_data}
 
-Compare the replicated output against the original paper. Then:
-1. Assign a grade (A/B/C/D/E/F) based on how well the results match.
-2. If the grade is NOT A, explain the discrepancy.
+Compare the replicated values against the original paper. Assign a grade (A-F)
+based on the grading scale.
 
 Respond with ONLY this JSON (no other text):
 {{
     "grade": "A/B/C/D/E/F",
     "comparison_notes": "Detailed comparison of the results",
-    "key_findings_match": true,
-    "discrepancy": {{
-        "description": "What differs (empty string if grade A)",
-        "likely_causes": ["ordered list of possible causes"],
-        "is_identifiable": true,
-        "fault_attribution": "replicator/original_paper/unclear/data_limitation",
-        "confidence": "high/medium/low",
-        "supporting_evidence": "Evidence from paper"
-    }}
+    "key_findings_match": true
 }}"""
 
         # Select relevant page images for this table
@@ -775,12 +726,6 @@ Respond with ONLY this JSON (no other text):
         prompt = FIGURE_JUDGE_PROMPT.format(
             item_id=item_id,
             paper_pages=paper_pages[:8000],
-            caption=spec.caption if spec else "Not available",
-            plot_type=spec.plot_type if spec else "Unknown",
-            x_axis=spec.x_axis if spec else "Unknown",
-            y_axis=spec.y_axis if spec else "Unknown",
-            grouping=", ".join(spec.grouping_vars) if spec and spec.grouping_vars else "None",
-            subplots=spec.subplot_structure if spec and spec.subplot_structure else "None",
             vision_note="The replicated figure image and original paper pages are attached for visual comparison.",
         )
 
@@ -853,7 +798,12 @@ Respond with ONLY this JSON (no other text):
     def _parse_judge_response(
         resp: dict, item_id: str, item_type: str,
     ) -> tuple[ItemVerification, DiscrepancyAnalysis | None]:
-        """Parse the combined judge JSON into verification + optional analysis."""
+        """Parse judge JSON into verification + optional stub analysis.
+
+        The judge only assesses similarity (grade + notes). Detailed
+        discrepancy analysis (fault attribution, causes) is left to the
+        explainer, so we create only a minimal stub here for non-A items.
+        """
         grade = ReplicationGrade(resp.get("grade", "F"))
 
         verification = ItemVerification(
@@ -867,16 +817,15 @@ Respond with ONLY this JSON (no other text):
 
         analysis = None
         if grade != ReplicationGrade.A:
-            disc = resp.get("discrepancy", {})
             analysis = DiscrepancyAnalysis(
                 item_id=item_id,
                 grade=grade,
-                description_of_discrepancy=disc.get("description", ""),
-                likely_causes=disc.get("likely_causes", []),
-                is_identifiable=disc.get("is_identifiable", False),
-                fault_attribution=disc.get("fault_attribution", "unclear"),
-                confidence=disc.get("confidence", "low"),
-                supporting_evidence=disc.get("supporting_evidence"),
+                description_of_discrepancy=resp.get("comparison_notes", ""),
+                likely_causes=[],
+                is_identifiable=False,
+                fault_attribution="unclear",
+                confidence="low",
+                supporting_evidence=None,
             )
 
         return verification, analysis

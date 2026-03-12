@@ -37,51 +37,66 @@ logger = get_logger(__name__)
 
 COMPARATOR_TASK = """You are comparing an original research table against a replicated version.
 
-## Files in this directory:
-- `original_table.json` — extracted values from the original paper table
-- `replicated_table.csv` — CSV produced by an AI replicator
+This directory contains two files: `original_table.json` (values extracted from
+the published paper) and `replicated_table.csv` (produced by an AI replicator).
+Explore both files to understand their structure.
 
-## Your task:
-Write a Python script `compare.py` that:
+## Goal
 
-1. **Reads both files** (json and csv).
+Write a Python script `compare.py` that aligns the two tables, detects any
+scale mismatches, computes per-cell comparison metrics, and writes the results
+to `comparison_results.json`. Execute the script and verify the output exists.
 
-2. **Aligns rows and columns** between the two tables using flexible label matching:
-   - Match by label similarity, NOT position.
-   - "Log GDP", "log_gdp", and "Log(GDP)" should match the same row.
-   - "(1)", "Column 1", and "(1) OLS" may be the same column.
-   - Standard error rows (often in parentheses in CSV) should match SE rows from the original.
-   - Use case-insensitive, whitespace-normalized, punctuation-stripped comparison.
-   - If an original row/column has no match in the replicated table, include it with replicated_value=null.
-   - If the replicated table has extra rows/columns, ignore them.
+Do not install extra packages.
 
-3. **Detect scale mismatches** — two levels:
+## 1. Alignment (the core challenge)
 
-   **a. Global scale detection**: Compute the median ratio of |original/replicated| across ALL
-   matched numeric cells (excluding correlations, counts, and near-zero values where
-   |original| < 0.001). If the median ratio is roughly 10, 100, or 1000 (within a factor of 3),
-   apply that as a global `scale_factor` to ALL replicated values before computing differences.
-   - Example: original values around 50-70 and replicated around 0.5-0.7 → scale_factor=100.
+The two tables represent the same data but may differ substantially in
+structure and labeling. You need to match rows and columns by meaning, not
+position. Common differences include:
 
-   **b. Per-row scale detection** (after global rescaling, or if no global rescaling was applied):
-   For each row, compute the median ratio of |original/rescaled_replicated| across the numeric
-   columns in that row (excluding correlations, counts, and near-zero values). If a row's median
-   ratio is roughly 10, 100, or 1000 (within a factor of 3), apply an additional per-row scale
-   factor to that row's replicated values. Record per-row scale factors in `row_scale_factors`.
-   - Example: Most rows are fine, but "MOVE" has original ~0.9 and replicated ~91 → row_scale_factor=0.01.
-   - This handles cases where some measures use different units (e.g., basis points vs normalized).
-   - Only apply per-row rescaling when the row-level ratio clearly indicates a scale mismatch.
-     Do NOT apply per-row rescaling if it would only affect 1-2 cells or if the ratio is ambiguous.
+- Label variations: "Log GDP", "log_gdp", "Log(GDP)" are the same variable.
+- Column naming: "(1)", "Column 1", "(1) OLS" may be the same column.
+- Standard errors may appear as parenthesized values in separate CSV rows but
+  as dedicated SE entries in the JSON.
+- Panel tables may be structured differently (nested vs flat).
 
-4. **Compute per-cell metrics** (after any global + per-row rescaling):
-   - `original_value`: float or null
-   - `replicated_value`: float or null (the raw replicated value BEFORE any rescaling)
-   - `replicated_value_rescaled`: float or null (after all rescaling; same as replicated_value if no rescaling)
-   - `absolute_difference`: |rescaled_replicated - original| or null
-   - `percent_difference`: |rescaled_replicated - original| / |original| * 100, or null if original is 0
-   - `sign_match`: true/false/null (comparing rescaled_replicated vs original; null if either is null/zero)
+If an original row/column has no match in the replicated table, include it
+with replicated_value=null. Ignore extra rows/columns in the replicated table.
 
-5. **Write results** to `comparison_results.json` with EXACTLY this schema:
+## 2. Scale detection
+
+Replicated values may be systematically off by a power of 10 (e.g. percentages
+vs decimals, basis points vs normalized). Detect this at two levels:
+
+**a. Global**: Compute the median ratio of |original/replicated| across all
+matched numeric cells (excluding near-zero values where |original| < 0.001).
+If the median ratio is roughly 10, 100, or 1000 (within a factor of 3),
+apply that as a global `scale_factor` to all replicated values before
+computing differences.
+- Example: original ~50-70 and replicated ~0.5-0.7 → scale_factor=100.
+
+**b. Per-row** (after global rescaling): For each row, compute the median
+ratio across that row's numeric columns. If a row's ratio is roughly 10, 100,
+or 1000, apply an additional per-row scale factor. Record these in
+`row_scale_factors`.
+- Example: most rows match, but "MOVE" has original ~0.9 and replicated ~91 → row_scale_factor=0.01.
+- Only apply when the ratio clearly indicates a scale mismatch across multiple
+  cells in the row, not for 1-2 ambiguous cells.
+
+## 3. Per-cell metrics (after rescaling)
+
+For each matched cell, compute:
+- `original_value`: float or null
+- `replicated_value`: float or null (raw value before any rescaling)
+- `replicated_value_rescaled`: float or null (after rescaling; same as replicated_value if none)
+- `absolute_difference`: |rescaled - original| or null
+- `percent_difference`: |rescaled - original| / |original| * 100, or null if original is 0
+- `sign_match`: true/false/null (null if either value is null or zero)
+
+## 4. Output schema
+
+Write `comparison_results.json` with exactly this structure:
 ```json
 {{
   "cell_comparisons": [
@@ -99,24 +114,12 @@ Write a Python script `compare.py` that:
   ],
   "scale_factor": null,
   "scale_note": "",
-  "row_scale_factors": {{"MOVE": 0.01, "SRVIX": 0.01}},
-  "row_scale_notes": {{"MOVE": "row median ratio ~100, applied 0.01", "SRVIX": "row median ratio ~100, applied 0.01"}},
+  "row_scale_factors": {{}},
+  "row_scale_notes": {{}},
   "alignment_notes": "description of how alignment was done",
   "summary": "brief summary of findings"
 }}
 ```
-
-6. **Execute the script** and verify `comparison_results.json` was created.
-
-IMPORTANT:
-- Only use standard library + pandas. Do NOT install extra packages.
-- Use `difflib.SequenceMatcher` for fuzzy label matching (it's in stdlib).
-- The `original_table.json` has a "cells" array where each cell has row_label, column_label,
-  numeric_value, is_standard_error, and row_type fields.
-- The replicated CSV may have different formatting: row labels in the first column,
-  SE rows may be separate rows with parenthesized values.
-- Output `replicated_value` as the RAW value from the CSV (before rescaling).
-- If no rescaling is needed, set scale_factor to null and replicated_value_rescaled = replicated_value.
 - Handle edge cases: empty cells, non-numeric cells, missing alignments.
 """
 

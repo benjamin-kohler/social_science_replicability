@@ -59,36 +59,11 @@ class OpencodeRunner(BaseReplicationRunner):
         else:
             setup_workspace(paper, paper_summary, workspace_dir)
 
-        # Build the inline prompt — action-oriented to minimize wasted turns.
+        # Build the inline prompt — single sentence pointing to TASK.md.
         if paper_direct:
-            prompt_text = (
-                "Read TASK.md for your full instructions and constraints. "
-                "IMPORTANT: Only access files inside this workspace directory. "
-                "Do NOT search for the paper or its results online. "
-                "Read the paper PDF (paper.pdf) to understand the methodology, "
-                "then replicate all tables and figures using the provided data. "
-                "Write and execute each script ONE AT A TIME. "
-                "You MUST execute every script with bash and verify the output file exists. "
-                "Use the naming convention: table_N.py -> table_N.csv, figure_N.py -> figure_N.png."
-            )
+            prompt_text = "Read TASK.md for your full instructions. Start by examining paper.pdf."
         else:
-            # The model's apply_patch can fail and kill the session, so every turn
-            # must count. TASK.md already has detailed variable names and data
-            # descriptions — no need for extensive exploration.
-            prompt_text = (
-                "Read TASK.md for your full instructions and constraints. "
-                "IMPORTANT: Only access files inside this workspace directory. "
-                "Do NOT read files outside this directory or search for the paper or its results.\n\n"
-                "EFFICIENCY IS CRITICAL — you have a limited number of turns. "
-                "Do NOT spend many turns exploring data. TASK.md already describes the variables "
-                "and column names in detail. Instead:\n"
-                "1. Run ONE quick bash command to check actual column names in the data files.\n"
-                "2. Write prepare_data.py (shared data loading module).\n"
-                "3. Write and execute each table/figure script ONE AT A TIME.\n"
-                "4. Fix any errors immediately.\n\n"
-                "Write code IMMEDIATELY after a brief data check. "
-                "Use the EXACT output filenames specified in TASK.md for each item."
-            )
+            prompt_text = "Read TASK.md for your full instructions."
 
         web_status = "ALLOWED" if self.allow_web_access else "BLOCKED"
         logger.info(

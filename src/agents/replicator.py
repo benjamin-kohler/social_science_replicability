@@ -458,11 +458,21 @@ Generate directly executable Python code (no function wrapping).
         """Generate and execute code for a table with error-driven retries."""
         logger.info(f"Replicating {table_spec.table_number}")
 
-        # Format processing steps
-        processing_steps = "\n".join(
+        # Format processing steps (general + table-specific)
+        general_steps = "\n".join(
             f"{s.step_number}. {s.description}"
             for s in summary.data_processing_steps
         )
+        table_steps = "\n".join(
+            f"{s.step_number}. {s.description}"
+            for s in table_spec.data_processing_steps
+        )
+        if general_steps and table_steps:
+            processing_steps = f"General:\n{general_steps}\n\nTable-specific:\n{table_steps}"
+        elif table_steps:
+            processing_steps = f"Table-specific:\n{table_steps}"
+        else:
+            processing_steps = general_steps
 
         # Format regression specs
         reg_specs = []
@@ -630,11 +640,21 @@ Use (XXX) for standard errors. Use --- for structurally empty cells.
         """Generate and execute code for a figure with error-driven retries."""
         logger.info(f"Replicating {figure_spec.figure_number}")
 
-        # Format processing steps
-        processing_steps = "\n".join(
+        # Format processing steps (general + figure-specific)
+        general_steps = "\n".join(
             f"{s.step_number}. {s.description}"
             for s in summary.data_processing_steps
         )
+        figure_steps = "\n".join(
+            f"{s.step_number}. {s.description}"
+            for s in figure_spec.data_processing_steps
+        )
+        if general_steps and figure_steps:
+            processing_steps = f"General:\n{general_steps}\n\nFigure-specific:\n{figure_steps}"
+        elif figure_steps:
+            processing_steps = f"Figure-specific:\n{figure_steps}"
+        else:
+            processing_steps = general_steps
 
         # Compute absolute save path for the figure
         fig_filename = f"{figure_spec.figure_number.replace(' ', '_').lower()}.png"

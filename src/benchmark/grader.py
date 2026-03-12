@@ -24,8 +24,8 @@ def grade_cell(cell: CellComparison) -> str:
 
     Grading scale:
         A: <1% difference (or both zero/near-zero)
-        B: 1-5% difference, same sign
-        C: 5-20% difference, same sign
+        B: 1-10% difference, same sign
+        C: 10-20% difference, same sign
         D: 20-50% difference, same sign
         E: >50% difference, different sign, or significance changed
         F: missing, incomparable, or could not be aligned
@@ -59,7 +59,7 @@ def grade_cell(cell: CellComparison) -> str:
 
     if pct < 1:
         return "A"
-    elif pct < 5:
+    elif pct < 10:
         return "B"
     elif pct < 20:
         return "C"

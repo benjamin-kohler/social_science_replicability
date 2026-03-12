@@ -111,12 +111,19 @@ class RegressionSpecResponse(BaseModel):
     additional_notes: Optional[str] = None
 
 
+class DataProcessingStepResponse(BaseModel):
+    step_number: int
+    description: str
+    variables_involved: list[str] = []
+
+
 class TableSpecResponse(BaseModel):
     table_number: str
     caption: str
     column_names: list[str] = []
     row_names: list[str] = []
     regression_specs: list[RegressionSpecResponse] = []
+    data_processing_steps: list[DataProcessingStepResponse] = []
     notes: Optional[str] = None
     data_source: Optional[str] = None
     panel_structure: Optional[str] = None
@@ -130,15 +137,10 @@ class PlotSpecResponse(BaseModel):
     y_axis: Optional[str] = None
     grouping_vars: list[str] = []
     regression_specs: list[RegressionSpecResponse] = []
+    data_processing_steps: list[DataProcessingStepResponse] = []
     notes: Optional[str] = None
     data_source: Optional[str] = None
     subplot_structure: Optional[str] = None
-
-
-class DataProcessingStepResponse(BaseModel):
-    step_number: int
-    description: str
-    variables_involved: list[str] = []
 
 
 class ExtractionResponse(BaseModel):
@@ -180,133 +182,103 @@ class TemplateResponse(BaseModel):
 
 EXTRACTION_SYSTEM_PROMPT = """You are a methodological extraction specialist for social science research papers.
 
-Your task is to extract ONLY the methodology, structure, and specifications from academic papers -
-NOT the actual results, findings, or numerical outcomes.
+Your task: extract the methodology, structure, and specifications from academic papers so that
+a replicator who cannot see the paper can reproduce every table and figure. Extract NO results.
 
-You must extract:
-1. Research questions
-2. Data description and context
-3. Data processing and cleaning steps
-4. Regression specifications (variables, models, controls) — attached to the table or figure they belong to
-5. Table structures — EXACT column headers and row labels as they appear in the paper
-6. Figure specifications — FULL captions, exact plot type, axis labels, legend entries
+## 1. What to extract
 
-## IMPORTANT: Extract ALL tables and figures by default.
-You must extract EVERY table and figure from the paper. The ONLY exceptions you may skip are:
-- Figures that are purely conceptual visualizations (flow diagrams, conceptual frameworks,
-  screenshots, photos, timelines, maps) that cannot be reproduced from data.
-Do NOT skip tables or figures just because they seem simple — summary statistics tables,
-design parameter tables, cross-tabulations, balance tables, and descriptive tables should
-ALL be extracted. When in doubt, extract it.
+- Research questions
+- Data description, source, sample size, time period
+- Data processing steps: BOTH general steps (applied to all analyses) AND per-table/per-figure
+  steps (sample restrictions, variable construction, or filtering specific to one table or figure)
+- Per-table: exact column headers, exact row labels, panel structure, caption, notes,
+  regression specifications, data source (if different tables use different datasets)
+- Per-figure: full caption, plot type, axis labels, legend/series entries, subplot structure,
+  visual details (approximate axis ranges, reference lines, line styles, color conventions)
+- Per-regression-spec: model type, dependent variable, independent variables, controls,
+  fixed effects, clustering, sample restrictions, equation, variable definitions
 
-## Cross-reference resolution (CRITICAL):
-- When a table note, regression specification, or methodology description references content
-  elsewhere in the paper (e.g., "see Appendix H for the list of controls", "variables defined
-  in Section 2", "specification as in equation (3)"), you MUST go to that location in the paper
-  and extract the actual referenced content.
-- NEVER leave unresolved forward/backward references like "see Appendix H" or "controls listed
-  in Table A3". Replace them with the actual variable list, equation, or definition found at
-  that location.
-- This is especially important for CONTROL VARIABLE LISTS. Papers commonly say "controls include
-  socio-demographic variables (see Appendix X)." You must find Appendix X and list every single
-  control variable individually.
+Extract ALL tables and ALL data-based figures. Skip only purely conceptual visualizations
+(flow diagrams, frameworks, screenshots, photos, maps). Do not skip tables because they seem
+simple — summary statistics, balance tables, and cross-tabulations must all be extracted.
 
-## Regression specification rules:
-- Every regression specification must be attached to the specific table or figure that displays
-  its results. Infer this mapping from the paper text — the methodology sections typically say
-  things like "Table 3 reports the results of estimating equation (2)" or "Figure 5 plots the
-  coefficients from specification (1)".
-- For regression TABLES: include one `regression_spec` describing the general model estimated.
-  If the table has multiple columns with variations (e.g., different controls or subsamples),
-  include one spec per distinct model variant. Describe model type, dependent variable,
-  independent variables, controls, fixed effects, clustering, and sample restrictions.
-- For regression-based FIGURES (coefficient plots, RDD plots, binned scatters with fit lines):
-  include `regression_specs` on the figure describing the underlying estimation.
-- Use the actual variable names from the paper's variable definitions or table notes, not
-  generic descriptions. If the paper says "we regress log(wage) on education", write
-  `dependent_var: "log(wage)"`, not `dependent_var: "outcome variable"`.
+## 2. What NOT to extract (results)
 
-## Control variable enumeration (CRITICAL):
-- In the `controls` field of each regression spec, enumerate EVERY control variable individually.
-  NEVER use aggregate descriptions like "socio-demographic controls" or "standard controls."
-  Instead, list each variable separately: ["age", "female", "education_level", "income", ...].
-- If the paper lists controls only in an appendix or another section, go to that location and
-  extract the complete list. This is essential — a replicator who cannot see the paper needs to
-  know every single variable in the model.
+Never include: regression coefficients, standard errors, t-statistics, p-values, significance
+stars, point estimates, confidence intervals, effect sizes, or descriptions of direction/magnitude.
 
-## Regression equation extraction:
-- For each regression spec, extract the **exact equation** from the paper in LaTeX notation
-  and store it in `equation_latex`. Copy the equation as written in the paper, preserving all
-  subscripts, superscripts, Greek letters, and notation. Examples:
-    - `A_i^T = \\alpha + \\beta \\bar{G}_i^T + f(I_{1,i}, I_{2,i}) + c_i + \\varepsilon_i`
-    - `Y_i = \\beta_0 + \\beta_1 X_i + \\gamma Z_i + \\delta_j + \\epsilon_i`
-  If the paper has numbered equations (e.g., "equation (3)"), copy the exact equation.
-  If no explicit equation is written but the specification is described in prose, write the
-  equation yourself based on the prose description using standard econometric notation.
-- For each equation, provide `variable_definitions`: a verbal mapping of every symbol to its
-  meaning. Include ALL information the paper provides about each variable — definition,
-  construction, coding, unit, sign convention, omitted categories, data source. Only include
-  what is explicitly stated in the paper; do not infer or guess. Write one definition per
-  variable, separated by semicolons. Example:
-    - `A_i^T: acceptance of targeted tax, equals 1 if respondent did not answer "No" and 0
-      otherwise (Section 2.3); \\bar{G}_i^T: believes does not lose under targeted reform,
-      endogenous, instrumented by eligibility indicators T_1 and T_2; f(I_1, I_2): flexible
-      polynomial in respondent income I_1 and second-adult income I_2 (both in €/month);
-      c_i: income-threshold fixed effects (4 levels: bottom 20/30/40/50 percentile);
-      \\varepsilon_i: error term`
+DO include: table/figure structure (headers, labels, panels), design parameters (sample sizes,
+thresholds, variable names), and descriptive labels ("N", "R-squared", "Controls", "Yes"/"No").
 
-## Comprehensive variable extraction (CRITICAL for replication):
-- Extract ALL variables used to compute results — dependent variables, independent variables,
-  controls, instruments, weights, and any intermediate/constructed variables.
-- For each variable, extract ALL information the paper provides about it. This includes but is
-  not limited to: how it is defined, how it is constructed from raw data, its coding or scaling,
-  its unit of measurement, sign conventions, reference/omitted categories for dummies, sample
-  restrictions it implies, and which survey question or data source it comes from.
-- Do NOT infer or guess information the paper does not state. Only extract what is explicitly
-  written. If the paper does not specify a sign convention or unit, do not invent one.
-- DO be thorough: if the paper defines a variable in the methodology section, restates it
-  differently in a table note, and adds detail in an appendix, combine all of that information.
-  Follow every cross-reference to collect the complete picture.
-- The goal: a replicator who cannot see the paper should have enough information to construct
-  every variable exactly as the authors did, based solely on your extraction.
+## 3. Data processing and cleaning steps
 
-## Per-table data source:
-- If different tables or figures use different datasets or subsamples from different surveys,
-  specify in `sample_restrictions` or `additional_notes` which exact data source is required.
-  Example: "Uses EL 2013 housing survey (N≈27,000), NOT the main survey sample (N≈3,000)"
-- This is critical when a paper combines multiple datasets (e.g., a main survey plus
-  administrative data or official statistics).
+This is critical for replication. Extract every step needed to go from the raw data files to
+each analysis-ready sample. Separate these into:
 
-## What counts as "results" (NEVER include):
-- Regression coefficients, standard errors, t-statistics, p-values
-- Significance stars or statements about significance
-- Point estimates, confidence intervals, or effect sizes
-- Descriptions of direction or magnitude of effects
+**General steps** (applied before any specific analysis):
+- File loading, merging, and reshaping (which files, which keys)
+- Variable construction (new columns derived from raw data)
+- Data cleaning: missing value treatment, outlier removal, winsorization
+- Sample filtering: time period restrictions, geographic restrictions, demographic restrictions
+- Transformations: log transforms, standardization, encoding
 
-## What is NOT results (DO include):
-- Table/figure structure: exact column headers, row labels, panel labels
-- Design parameters: sample sizes, thresholds, treatment assignments, variable names
-- Descriptive labels that identify what each cell SHOULD contain (e.g. "N", "R²", "Controls")
+**Per-table / per-figure steps** (use `sample_restrictions` on each table/figure spec):
+- Additional filtering specific to one table (e.g., "Table 3 restricts to males aged 25-64")
+- Subsample definitions for different columns (e.g., "Columns 1-3 use the full sample,
+  columns 4-6 restrict to the treatment group")
+- Variable construction specific to one analysis (e.g., "For Figure 2, compute rolling 30-day
+  averages of daily returns")
 
-## Critical rules for table extraction:
-- Copy the EXACT column headers from the paper (e.g., "(1)", "(2)", "(3)" or "OLS", "IV", etc.)
-- Copy the EXACT row labels from the paper (e.g., the actual variable names used)
-- Count columns and rows precisely. If the paper has 7 columns, you must list exactly 7.
-- Include panel structure (Panel A / Panel B) when present
+Use the actual variable names from the dataset where possible.
 
-## Critical rules for figure extraction:
-- Copy the FULL caption from the paper (including subtitles and notes)
-- Skip ONLY figures that are purely conceptual visualizations (flow diagrams, frameworks, photos)
-- For each data-based figure: specify the exact plot type, axis labels, series/legend entries,
-  and subplot arrangement as shown in the paper
+## 4. Regression specifications
 
-Your output must allow someone to replicate the analysis without knowing what results to expect."""
+Attach each regression spec to the table or figure that displays its results. Include one spec
+per distinct model variant (e.g., different controls or subsamples across columns).
+
+For each spec:
+- Use actual variable names from the paper, not generic descriptions.
+  Write `dependent_var: "log(wage)"`, not `dependent_var: "outcome variable"`.
+- `controls`: enumerate every control variable individually. Never write aggregate descriptions
+  like "socio-demographic controls" — list each variable: ["age", "female", "education_level", ...].
+- `equation_latex`: copy the exact equation from the paper in LaTeX notation, preserving all
+  subscripts, Greek letters, and notation. If no explicit equation is given, write one from the
+  prose description. Example:
+  `Y_i = \\beta_0 + \\beta_1 X_i + \\gamma Z_i + \\delta_j + \\epsilon_i`
+- `variable_definitions`: define every symbol verbally, separated by semicolons. Include all
+  information the paper provides: definition, construction, coding, unit, sign convention,
+  omitted categories, data source. Only include what is explicitly stated — do not infer.
+  Example: `A_i^T: acceptance of targeted tax (1 if not "No", as defined in Section 2.3);
+  c_i: income-threshold fixed effects (4 levels: bottom 20/30/40/50 percentile)`
+- `sample_restrictions`: extract the exact condition including any mathematical formulation
+  and expected sample size.
+  BAD: "Among invalidated respondents"
+  GOOD: "Among invalidated respondents, defined as sgn(g_i) != sgn(gamma_hat_i) (Section 4.1). N = 1,365."
+
+## 5. Cross-reference resolution
+
+When anything references content elsewhere ("see Appendix H", "controls listed in Table A3",
+"as defined in Section 2"), go to that location and extract the actual content. Never leave
+unresolved references — the replicator cannot see the paper. This is especially important for
+control variable lists: find the appendix and enumerate every variable individually.
+
+## 6. Variable completeness
+
+Extract ALL variables: dependent, independent, controls, instruments, weights, and constructed
+variables. For each, combine information from all locations in the paper (methodology section,
+table notes, appendices). The goal: a replicator should be able to construct every variable
+exactly as the authors did based solely on your extraction.
+
+## 7. Table and figure precision
+
+- Copy EXACT column headers and row labels as printed. Count columns and rows precisely.
+- Include panel structure (Panel A / Panel B) when present.
+- Copy full captions and table notes (excluding notes about specific coefficient values).
+- For figures: note approximate axis ranges, reference lines, and line style conventions.
+- If different tables use different datasets, specify the data source per table."""
 
 
-EXTRACTION_USER_PROMPT = """Analyze the following academic paper and extract its methodology.
-
-## Paper Text:
-{paper_text}
+EXTRACTION_USER_PROMPT = """Extract the methodology from this paper. Follow the system instructions.
 
 ## Detected Table Captions:
 {table_captions}
@@ -314,110 +286,46 @@ EXTRACTION_USER_PROMPT = """Analyze the following academic paper and extract its
 ## Detected Figure Captions:
 {figure_captions}
 
-## Instructions:
-
-Carefully read the paper and extract all methodological information.
-
-### Table extraction rules:
-- Extract ALL tables from the paper. Do not skip any tables.
-- For each table, go to the actual table in the paper text and copy the EXACT headers and labels.
-- `column_names`: list every column header exactly as printed. If columns are "(1)", "(2)", "(3) OLS", "(4) IV",
-  list them as ["(1)", "(2)", "(3) OLS", "(4) IV"]. Count carefully.
-- `row_names`: list every row label exactly as printed. Include variable names, statistics rows
-  ("Observations", "R²", "Controls"), and panel headers ("Panel A: ...", "Panel B: ...").
-- For regression tables, fill in `regression_specs` — one per distinct model variant.
-  Use the actual variable names from the paper's variable descriptions or table notes.
-- `caption`: copy the full caption from the paper.
-- `notes`: copy the table notes (footnotes), excluding any that describe specific coefficient values.
-
-### Regression equation rules:
-- For every `regression_spec`, you MUST fill in `equation_latex` and `variable_definitions`.
-- `equation_latex`: Copy the exact equation from the paper in LaTeX. If the paper writes
-  "equation (3): A_i^T = α + β Ḡ_i^T + f(I₁,I₂) + cᵢ + εᵢ", write it as:
-  `A_i^T = \\alpha + \\beta \\bar{{G}}_i^T + f(I_{{1,i}}, I_{{2,i}}) + c_i + \\varepsilon_i`
-  If the paper does not state an explicit equation but describes the model in prose,
-  write the equation yourself in standard econometric LaTeX notation.
-- `variable_definitions`: Define every symbol in the equation verbally, separated by semicolons.
-  Example: `A_i^T: acceptance of targeted tax (1 if not "No"); \\bar{{G}}_i^T: believes does not
-  lose under targeted reform (binary, endogenous); c_i: threshold fixed effects`
-
-### Figure extraction rules:
-- Extract ALL figures EXCEPT purely conceptual visualizations (flow diagrams, conceptual
-  frameworks, screenshots, photos) that cannot be reproduced from data.
-- For each data-based figure: copy the full caption including any subtitle.
-- Identify exact plot type (histogram, kernel density, CDF, scatter, bar, line, box, etc.).
-- List the exact axis labels and all legend/series entries.
-- If the figure has subplots (panels), describe the subplot_structure.
-- In `notes`, include any visual details from the paper: approximate axis ranges, whether there
-  are reference lines (e.g., vertical line at zero), color scheme or line style conventions
-  (e.g., "solid for objective, dashed for subjective"), and any annotations visible in the figure.
-
-### Data processing rules:
-- Focus on steps that are needed to go from the raw dataset to the analysis sample.
-- Use the actual variable names from the dataset where possible.
-- Include sample restrictions, variable construction, and any transformations."""
+## Paper Text:
+{paper_text}"""
 
 
 TEMPLATE_GENERATION_SYSTEM_PROMPT = """You are a structural template specialist for academic paper tables and figures.
 
-Your task is to generate STRUCTURAL TEMPLATES that faithfully reproduce the exact layout of
-tables and figures from a paper.
+Generate templates that faithfully reproduce the exact layout of tables and figures from a paper.
 
-## Table template rules:
+## Table templates
 
-1. The template must have EXACTLY the same number of columns and rows as the original table.
-2. Use the EXACT column headers and row labels from the paper.
-3. Cell content rules — look at the ORIGINAL TABLE in the paper for each cell:
-   - **XXX**: for cells where the paper shows a computed result (coefficient, statistic, count,
-     mean, std. dev., p-value, etc.) that must be produced by running code on data.
-   - **(XXX)**: for cells where the paper shows a standard error in parentheses.
-   - **Empty cell**: leave the cell empty if it is blank in the original table. This includes
-     cells where a variable is not part of a particular column's specification. Do NOT use ---
-     or any other placeholder for empty cells — just leave them blank.
-   - **Literal text**: for cells that contain fixed text like "Yes", "No", checkmarks, or labels.
-4. Include panel headers (Panel A, Panel B) as spanning rows when present.
-5. Include the full caption above the table.
+- EXACTLY the same number of columns and rows as the original table.
+- Use the EXACT column headers and row labels from the paper.
+- Cell content rules (check the ORIGINAL TABLE in the paper for each cell):
+  - **XXX**: computed result (coefficient, statistic, count, mean, etc.)
+  - **(XXX)**: standard error in parentheses
+  - **Empty**: leave blank if blank in the original (do NOT use --- or placeholders)
+  - **Literal text**: copy "Yes", "No", checkmarks, or labels as-is
+- Include panel headers (Panel A, Panel B) as spanning rows when present.
+- Include the full caption above the table.
 
-## Figure template rules:
+## Figure templates
 
-1. Produce a matplotlib code skeleton that a replicator can fill in with computed data.
-2. The skeleton must make the intended visual style unambiguous:
-   - Use the correct plot function: `ax.plot()` for lines, `ax.bar()` for bars, `ax.hist()`
-     for histograms, `ax.scatter()` for scatter plots, `scipy.stats.gaussian_kde` for KDEs, etc.
-   - Set line styles (`linestyle=`, `linewidth=`), marker styles, or bar widths as appropriate.
-   - Set colors for each series using a consistent scheme (e.g., `color="tab:blue"`, `color="tab:orange"`).
-     Use distinct colors for each series and dashed/solid to distinguish categories (e.g.,
-     solid for "objective", dashed for "subjective").
-3. Set axis ranges (`ax.set_xlim()`, `ax.set_ylim()`) based on what is visible or described
-   in the paper. Use approximate ranges — they don't need to be exact.
-4. Use the actual series names / legend labels from the paper.
-5. Include the full caption as the title.
-6. Set up subplots correctly if the figure has panels.
-7. NO actual data arrays — use empty placeholder arrays or comments like `# TODO: fill with data`.
-   The skeleton should be runnable (no errors) even without data, just producing an empty styled plot."""
+- Matplotlib code skeleton that makes the intended visual style unambiguous.
+- Use the correct plot function: `ax.plot()`, `ax.bar()`, `ax.hist()`, `ax.scatter()`, etc.
+- Set line styles, markers, colors for each series (use `tab:blue`, `tab:orange`, etc.).
+- Set approximate axis ranges from the paper (`ax.set_xlim()`, `ax.set_ylim()`).
+- Add reference lines (axvline, axhline) if the paper has them.
+- Use actual series names / legend labels from the paper.
+- Include the full caption as the title.
+- Set up subplots correctly if the figure has panels.
+- NO actual data arrays — use comments like `# TODO: fill with data`.
+- The skeleton should be runnable (producing an empty styled plot) even without data."""
 
 
-TEMPLATE_GENERATION_USER_PROMPT = """Given the following paper text and extracted table/figure specifications,
-generate structural templates for each item. Respond with valid JSON.
-
-## Paper Text (excerpt):
-{paper_text}
-
-## Extracted Tables:
-{table_specs_json}
-
-## Extracted Figures:
-{figure_specs_json}
-
-## Instructions:
+TEMPLATE_GENERATION_USER_PROMPT = """Generate structural templates for each table and figure.
+Respond with valid JSON.
 
 Go back to the ORIGINAL TABLE in the paper text and reproduce its structure EXACTLY.
 
-For regression tables, the template should look like this example. Note how Variable C only
-appears in columns (3) and (4) — the other columns are left empty because the original table
-is blank there:
-
-**Table 3.1: Determinants of Y**
+Example regression table template (note how Variable C only appears in columns (3)-(4)):
 
 | | (1) | (2) | (3) | (4) |
 |---|---|---|---|---|
@@ -429,55 +337,31 @@ is blank there:
 | | | | (XXX) | (XXX) |
 | Controls | No | Yes | No | Yes |
 | Observations | XXX | XXX | XXX | XXX |
-| R² | XXX | XXX | | |
 
-Rules:
-- XXX = cell where the paper shows a computed result (coefficient, statistic, count, mean, etc.)
-- (XXX) = cell where the paper shows a standard error in parentheses
-- Empty cell = cell that is blank or shows a dash in the original table. Just leave the cell
-  empty in the markdown. Do NOT use --- or any other placeholder.
-- "No", "Yes", actual labels = copy literally from the paper
-- Count columns from the paper EXACTLY. Do not add or remove columns.
-- Count rows from the paper EXACTLY. Include every variable, every statistics row.
-- If the table has panels (Panel A, Panel B), include them.
-
-For figures, produce a detailed matplotlib skeleton like this example:
+Example figure skeleton:
 
 ```python
-import numpy as np
 import matplotlib.pyplot as plt
-from scipy.stats import gaussian_kde
-
 fig, ax = plt.subplots(1, 1, figsize=(10, 6))
-
-# Series 1: Objective gains (solid blue line, KDE)
 # x_obj, density_obj = ... # TODO: compute KDE from data
 # ax.plot(x_obj, density_obj, color="tab:blue", linestyle="-", linewidth=2, label="Objective")
-
-# Series 2: Subjective gains (dashed red line, KDE)
-# x_subj, density_subj = ... # TODO: compute KDE from data
-# ax.plot(x_subj, density_subj, color="tab:red", linestyle="--", linewidth=2, label="Subjective")
-
-ax.set_xlabel("Net gain (€/year)", fontsize=12)
+ax.set_xlabel("Net gain (EUR/year)", fontsize=12)
 ax.set_ylabel("Density", fontsize=12)
 ax.set_xlim(-1500, 1500)
-ax.set_ylim(0, 0.003)
 ax.axvline(x=0, color="black", linestyle=":", linewidth=0.8)
-ax.set_title("Figure 3.1: Distribution of objective vs. subjective net gains")
-ax.legend(fontsize=11)
+ax.legend()
 plt.tight_layout()
-plt.savefig("figure_3.1.png", dpi=150)
+plt.savefig("figure_X.png", dpi=150)
 ```
 
-Rules for figure skeletons:
-- Use the correct plot function for the plot type (plot, bar, hist, scatter, step, fill_between, etc.)
-- Set colors for each series (use tab:blue, tab:orange, tab:red, tab:green, etc.)
-- Use linestyle solid vs dashed to distinguish categories where the paper does so
-- Set approximate axis limits (xlim, ylim) based on what is shown in the paper
-- Add reference lines (axvline, axhline) if the paper has them (e.g., zero line)
-- Include savefig with the correct filename
-- Comment out data-dependent lines with # TODO, but keep the styling arguments visible
-- The skeleton should convey the full visual intent so the replicator knows exactly what to build"""
+## Paper Text (excerpt):
+{paper_text}
+
+## Extracted Tables:
+{table_specs_json}
+
+## Extracted Figures:
+{figure_specs_json}"""
 
 
 # ---------------------------------------------------------------------------
@@ -564,21 +448,16 @@ class ExtractorAgent:
         # ----- Step 1: Extract methodology (structured output) -----
         logger.info("Step 1: Extracting methodology...")
 
-        extraction_text = (
-            "Analyze the following academic paper and extract its methodology.\n\n"
-            f"## Detected Table Captions:\n{table_captions_str}\n\n"
-            f"## Detected Figure Captions:\n{figure_captions_str}\n\n"
-        )
-
+        # Build user prompt (same structure for both vision and text paths;
+        # all extraction rules live in the system prompt)
         if self.use_vision:
-            # Build multimodal input: text instructions + page images
-            input_content = self._build_vision_input(
-                extraction_text + self._extraction_instructions(),
-                page_images,
+            user_text = EXTRACTION_USER_PROMPT.format(
+                paper_text="(See attached page images below.)",
+                table_captions=table_captions_str,
+                figure_captions=figure_captions_str,
             )
+            input_content = self._build_vision_input(user_text, page_images)
         else:
-            # Escape curly braces in paper text to prevent str.format() errors
-            # (PDF text may contain literal braces, e.g., in equations like {G})
             safe_paper_text = paper_text[:200000].replace("{", "{{").replace("}", "}}")
             safe_table_captions = table_captions_str.replace("{", "{{").replace("}", "}}")
             safe_figure_captions = figure_captions_str.replace("{", "{{").replace("}", "}}")
@@ -618,68 +497,6 @@ class ExtractorAgent:
             f"{self._usage.total_duration:.1f}s"
         )
         return summary, self._usage
-
-    @staticmethod
-    def _extraction_instructions() -> str:
-        """Return the extraction instructions portion of the user prompt."""
-        return """
-## Instructions:
-
-Carefully read the paper and extract all methodological information.
-
-### Table extraction rules:
-- Extract ALL tables from the paper. Do not skip any tables.
-- For each table, look at the actual table in the paper and copy the EXACT headers and labels.
-- `column_names`: list every column header exactly as printed. Count carefully.
-- `row_names`: list every row label exactly as printed. Include variable names, statistics rows
-  ("Observations", "R²", "Controls"), and panel headers ("Panel A: ...", "Panel B: ...").
-- For regression tables, fill in `regression_specs` — one per distinct model variant.
-- `caption`: copy the full caption from the paper.
-- `notes`: copy the table notes (footnotes), excluding any that describe specific coefficient values.
-
-### Regression equation rules:
-- For every `regression_spec`, you MUST fill in `equation_latex` and `variable_definitions`.
-- `equation_latex`: Copy the exact equation from the paper in LaTeX. If the paper writes
-  "equation (3): A_i^T = α + β Ḡ_i^T + f(I₁,I₂) + cᵢ + εᵢ", write it as:
-  `A_i^T = \\alpha + \\beta \\bar{G}_i^T + f(I_{1,i}, I_{2,i}) + c_i + \\varepsilon_i`
-  If the paper does not state an explicit equation but describes the model in prose,
-  write the equation yourself in standard econometric LaTeX notation.
-- `variable_definitions`: Define every symbol in the equation verbally, separated by semicolons.
-  Include ALL information the paper provides about each variable — how it is defined,
-  constructed, coded, scaled, which survey question or data source it comes from, its unit,
-  sign convention, and reference/omitted categories. Only include what the paper explicitly
-  states; do not infer or guess.
-  Example: `A_i^T: acceptance of targeted tax (1 if not "No", 0 if "No", as defined in
-  Section 2.3); \\bar{G}_i^T: believes does not lose under targeted reform (binary,
-  endogenous, instrumented by eligibility indicators T_1, T_2); c_i: income-threshold
-  fixed effects (4 levels: bottom 20/30/40/50 percentile)`
-
-### Cross-reference resolution rules:
-- CRITICAL: If any table note, footnote, or regression description says "see Appendix X",
-  "controls listed in Table Y", or "as defined in Section Z", you MUST go to that location
-  in the paper and extract the actual content. The replicator cannot see the paper.
-- For `controls`: enumerate every control variable individually. NEVER write
-  "socio-demographic controls (see Appendix H)". Instead, find Appendix H and list:
-  ["age", "age_squared", "female", "education_level", "income_decile", ...].
-
-### Sample restriction rules:
-- For `sample_restrictions`, extract the exact condition as stated in the paper, including
-  any mathematical formulation. Include the expected sample size when given.
-  BAD: "Among invalidated respondents"
-  GOOD: "Among invalidated respondents, defined as sgn(g_i) ≠ sgn(γ̂_i) (Section 4.1). N = 1,365."
-
-### Figure extraction rules:
-- Extract ALL figures EXCEPT purely conceptual visualizations (flow diagrams, conceptual
-  frameworks, screenshots, photos) that cannot be reproduced from data.
-- For each data-based figure: copy the full caption including any subtitle.
-- Identify exact plot type (histogram, kernel density, CDF, scatter, bar, line, box, etc.).
-- List the exact axis labels and all legend/series entries.
-- If the figure has subplots (panels), describe the subplot_structure.
-
-### Data processing rules:
-- Focus on steps that are needed to go from the raw dataset to the analysis sample.
-- Use the actual variable names from the dataset where possible.
-- Include sample restrictions, variable construction, and any transformations."""
 
     def _build_vision_input(self, text_prompt: str, page_images: list[dict]) -> list[dict]:
         """Build a multimodal input list with text + page images for the Responses API.
@@ -773,6 +590,7 @@ Carefully read the paper and extract all methodological information.
                 column_names=t.column_names,
                 row_names=t.row_names,
                 regression_specs=[RegressionSpec(**s.model_dump()) for s in t.regression_specs],
+                data_processing_steps=[DataProcessingStep(**s.model_dump()) for s in t.data_processing_steps],
                 notes=t.notes,
                 data_source=t.data_source,
                 panel_structure=t.panel_structure,
@@ -795,6 +613,7 @@ Carefully read the paper and extract all methodological information.
                     y_axis=f.y_axis,
                     grouping_vars=f.grouping_vars or None,
                     regression_specs=[RegressionSpec(**s.model_dump()) for s in f.regression_specs],
+                    data_processing_steps=[DataProcessingStep(**s.model_dump()) for s in f.data_processing_steps],
                     notes=f.notes,
                     data_source=f.data_source,
                     subplot_structure=f.subplot_structure,

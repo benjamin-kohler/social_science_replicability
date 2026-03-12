@@ -74,6 +74,10 @@ class TableSpec(BaseModel):
     regression_specs: list[RegressionSpec] = Field(
         default_factory=list, description="Regression specifications for each column"
     )
+    data_processing_steps: list[DataProcessingStep] = Field(
+        default_factory=list,
+        description="Data processing steps specific to this table (e.g., additional filtering, variable construction, subsample definitions). General steps shared across all tables go in PaperSummary.data_processing_steps.",
+    )
     notes: Optional[str] = Field(default=None, description="Table notes (excluding results)")
     data_source: Optional[str] = Field(
         default=None,
@@ -106,6 +110,10 @@ class PlotSpec(BaseModel):
     regression_specs: list[RegressionSpec] = Field(
         default_factory=list,
         description="Regression specifications underlying this figure (e.g., for coefficient plots, RDD plots, binned scatters with fit lines)",
+    )
+    data_processing_steps: list[DataProcessingStep] = Field(
+        default_factory=list,
+        description="Data processing steps specific to this figure (e.g., aggregation, rolling averages, additional filtering). General steps shared across all figures go in PaperSummary.data_processing_steps.",
     )
     notes: Optional[str] = Field(default=None, description="Figure notes")
     data_source: Optional[str] = Field(

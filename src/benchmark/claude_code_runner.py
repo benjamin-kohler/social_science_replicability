@@ -61,30 +61,11 @@ class ClaudeCodeRunner(BaseReplicationRunner):
         else:
             setup_workspace(paper, paper_summary, workspace_dir)
 
-        # Build the inline prompt — action-oriented to minimize wasted turns
+        # Build the inline prompt — single sentence pointing to TASK.md.
         if paper_direct:
-            prompt_text = (
-                "Read TASK.md for your full instructions and constraints. "
-                "IMPORTANT: Only access files inside this workspace directory. "
-                "Do NOT search for the paper or its results online. "
-                "Read the paper PDF (paper.pdf) to understand the methodology, "
-                "then replicate all tables and figures using the provided data. "
-                "Write and execute each script ONE AT A TIME. "
-                "You MUST execute every script with bash and verify the output file exists. "
-                "Use the naming convention: table_N.py -> table_N.csv, figure_N.py -> figure_N.png."
-            )
+            prompt_text = "Read TASK.md for your full instructions. Start by examining paper.pdf."
         else:
-            prompt_text = (
-                "Read TASK.md for your full instructions and constraints. "
-                "IMPORTANT: Only access files inside this workspace directory. "
-                "Do NOT read files outside this directory or search for the paper or its results. "
-                "TASK.md already describes the variables and data structure in detail. "
-                "Run ONE quick command to check actual column names, then immediately start "
-                "writing code. Write and execute each table/figure script ONE AT A TIME — "
-                "write, run, fix errors, then move to the next. "
-                "You MUST execute every script with bash and verify the output file exists. "
-                "Use the exact output filenames specified in TASK.md for each item."
-            )
+            prompt_text = "Read TASK.md for your full instructions."
 
         web_status = "ALLOWED" if self.allow_web_access else "BLOCKED"
         logger.info(
