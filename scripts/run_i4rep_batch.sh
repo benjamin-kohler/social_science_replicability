@@ -36,7 +36,7 @@ CONFIG_DIR="$PROJECT_ROOT/config"
 LOG_FILE="$PROJECT_ROOT/data/i4replicate/batch_run.log"
 
 # Approaches to run (override with APPROACHES env var)
-APPROACHES="${APPROACHES:-claude-code codex swe-agent}"
+APPROACHES="${APPROACHES:-claude-code codex swe-agent opencode}"
 
 # Timeout per approach in seconds (2 hours)
 TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-7200}"
@@ -63,6 +63,11 @@ fi
 # Activate project environment if it exists
 if command -v conda &>/dev/null; then
     conda activate replicability 2>/dev/null || conda activate base 2>/dev/null || true
+fi
+
+# Add opencode to PATH if installed
+if [ -d "$HOME/.opencode/bin" ]; then
+    export PATH="$HOME/.opencode/bin:$PATH"
 fi
 
 # Load .env for API keys
@@ -112,7 +117,12 @@ generate_config() {
             ;;
         swe-agent)
             provider="openai"
-            model_name="gpt-5.3-codex"
+            model_name="gpt-5.2-codex"
+            api_key_env="OPENAI_API_KEY"
+            ;;
+        opencode)
+            provider="openai"
+            model_name="gpt-5.2-codex"
             api_key_env="OPENAI_API_KEY"
             ;;
         structured)
