@@ -331,8 +331,9 @@ def setup_paper_dir(
                 both_files.append((rel, abs_p))
             # skip: do nothing
 
-        # Find paper PDF
-        paper_pdf = find_paper_pdf(pdf_files)
+        # NOTE: We do NOT extract paper.pdf from replication packages.
+        # PDFs in packages are often appendices/codebooks, not the actual paper.
+        # Papers must be sourced separately (e.g., downloaded manually).
 
         # Create paper directory
         if paper_dir.exists():
@@ -356,17 +357,11 @@ def setup_paper_dir(
             dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(abs_p, dest)
 
-        # Also copy non-paper PDFs (codebooks etc.) to replication_package
+        # Copy all PDFs to replication_package (not as paper.pdf)
         for rel, abs_p in pdf_files:
-            if abs_p != paper_pdf:
-                dest = code_dest / rel
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(abs_p, dest)
-
-        # Copy paper PDF
-        if paper_pdf:
-            shutil.copy2(paper_pdf, paper_dir / "paper.pdf")
-            result["has_pdf"] = True
+            dest = code_dest / rel
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(abs_p, dest)
 
         # Write metadata
         meta_path = paper_dir / "metadata.json"
