@@ -151,6 +151,41 @@ def identify_sections(text: str) -> dict[str, str]:
     return sections
 
 
+def _extract_multiline_caption(text: str, start: int) -> str:
+    """Extract a multi-line caption starting at position `start` in text.
+
+    Continues across newlines until hitting a blank line, a new section
+    heading (Table/Figure/Appendix/Section/Chapter + number), or a line
+    that looks like body text (starts with common sentence patterns after
+    a blank-ish line).
+    """
+    # Stop patterns: new figure/table/section heading, blank line, or very short line
+    # that looks like a page break
+    stop_pattern = re.compile(
+        r"^(?:"
+        r"(?:Table|Figure|Fig\.?|Appendix|Section|Chapter)\s+\d"  # new heading
+        r"|\s*$"  # blank line
+        r"|Notes?[:\.]"  # table/figure notes
+        r"|Source[:\.]"  # source attribution
+        r"|\d+\s*$"  # lone page number
+        r")",
+        re.IGNORECASE,
+    )
+
+    lines = text[start:].split("\n")
+    caption_lines = [lines[0]] if lines else []
+
+    for line in lines[1:]:
+        stripped = line.strip()
+        if stop_pattern.match(stripped):
+            break
+        if not stripped:
+            break
+        caption_lines.append(stripped)
+
+    return " ".join(caption_lines).strip()
+
+
 def extract_figure_captions(text: str) -> list[dict]:
     """Extract figure captions from paper text.
 
@@ -160,17 +195,23 @@ def extract_figure_captions(text: str) -> list[dict]:
     Returns:
         List of dicts with 'figure_number' and 'caption'.
     """
-    # Pattern for figure captions (supports dotted numbering like Figure 2.1)
-    pattern = r"(?i)(Figure|Fig\.?)\s*(\d+(?:\.\d+)?[A-Za-z]?)[:\.]?\s*([^\n]+(?:\n(?![A-Z])[^\n]+)*)"
+    pattern = re.compile(
+        r"(?i)(?:Figure|Fig\.?)\s*(\d+(?:\.\d+)?[A-Za-z]?)[:\.\s—–-]+",
+    )
 
     captions = []
-    for match in re.finditer(pattern, text):
-        figure_num = f"Figure {match.group(2)}"
-        caption = match.group(3).strip()
-        captions.append({
-            "figure_number": figure_num,
-            "caption": caption,
-        })
+    seen = set()
+    for match in pattern.finditer(text):
+        figure_num = f"Figure {match.group(1)}"
+        if figure_num in seen:
+            continue
+        seen.add(figure_num)
+        caption = _extract_multiline_caption(text, match.end())
+        if caption:
+            captions.append({
+                "figure_number": figure_num,
+                "caption": caption,
+            })
 
     return captions
 
@@ -184,17 +225,23 @@ def extract_table_captions(text: str) -> list[dict]:
     Returns:
         List of dicts with 'table_number' and 'caption'.
     """
-    # Pattern for table captions (supports dotted numbering like Table 2.1)
-    pattern = r"(?i)(Table)\s*(\d+(?:\.\d+)?[A-Za-z]?)[:\.]?\s*([^\n]+(?:\n(?![A-Z])[^\n]+)*)"
+    pattern = re.compile(
+        r"(?i)(?:Table)\s*(\d+(?:\.\d+)?[A-Za-z]?)[:\.\s—–-]+",
+    )
 
     captions = []
-    for match in re.finditer(pattern, text):
-        table_num = f"Table {match.group(2)}"
-        caption = match.group(3).strip()
-        captions.append({
-            "table_number": table_num,
-            "caption": caption,
-        })
+    seen = set()
+    for match in pattern.finditer(text):
+        table_num = f"Table {match.group(1)}"
+        if table_num in seen:
+            continue
+        seen.add(table_num)
+        caption = _extract_multiline_caption(text, match.end())
+        if caption:
+            captions.append({
+                "table_number": table_num,
+                "caption": caption,
+            })
 
     return captions
 

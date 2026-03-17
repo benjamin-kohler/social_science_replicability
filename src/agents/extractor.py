@@ -394,7 +394,7 @@ class ExtractorAgent:
     def __init__(
         self,
         config: Config,
-        model: str = "gpt-5.2",
+        model: str = "gpt-5-mini",
         max_tokens: int = 128000,
         use_vision: bool = True,
         vision_dpi: int = 200,

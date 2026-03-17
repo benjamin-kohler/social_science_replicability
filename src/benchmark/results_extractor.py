@@ -162,7 +162,7 @@ class ResultsExtractor:
     def __init__(
         self,
         provider: str = "openai",
-        model: str = "gpt-5.2",
+        model: str = "gpt-5-mini",
         api_key: str = "",
         use_vision: bool = True,
         vision_dpi: int = 200,

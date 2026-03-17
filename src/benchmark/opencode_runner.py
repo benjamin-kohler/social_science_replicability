@@ -130,12 +130,24 @@ class OpencodeRunner(BaseReplicationRunner):
             f"=== STDERR ===\n{stderr}\n"
         )
 
+        # If JSONL parsing didn't yield usage, query OpenCode's SQLite DB
+        if usage is None or usage.get("total_tokens", 0) == 0:
+            try:
+                db_usage = self._query_opencode_db(str(workspace_dir))
+                if db_usage:
+                    if usage is None:
+                        usage = db_usage
+                    else:
+                        usage.update(db_usage)
+            except Exception as e:
+                logger.warning(f"Could not query OpenCode DB for usage: {e}")
+
         if usage:
             usage_path = workspace_dir.parent / "usage.json"
             usage_path.write_text(json_mod.dumps(usage, indent=2))
             logger.info(
                 f"Token usage: {usage.get('total_tokens', 0):,} total, "
-                f"{usage.get('num_steps', 0)} steps"
+                f"cost=${usage.get('total_cost_usd', 0):.2f}"
             )
 
         return RunArtifacts(
@@ -221,3 +233,68 @@ class OpencodeRunner(BaseReplicationRunner):
             usage_dict = None
 
         return readable, usage_dict
+
+    @staticmethod
+    def _query_opencode_db(workspace_dir: str) -> dict | None:
+        """Query OpenCode's SQLite DB for token usage matching this workspace.
+
+        OpenCode stores all session data in ~/.local/share/opencode/opencode.db.
+        Each session has a `directory` field pointing to the workspace, and each
+        assistant message has `tokens` and `cost` fields.
+        """
+        import sqlite3
+
+        db_path = Path.home() / ".local" / "share" / "opencode" / "opencode.db"
+        if not db_path.exists():
+            return None
+
+        try:
+            db = sqlite3.connect(str(db_path))
+            cur = db.cursor()
+
+            # Find session by workspace directory
+            cur.execute(
+                "SELECT id FROM session WHERE directory = ?",
+                (workspace_dir,),
+            )
+            row = cur.fetchone()
+            if not row:
+                db.close()
+                return None
+
+            session_id = row[0]
+
+            # Sum tokens and cost across all assistant messages
+            cur.execute(
+                "SELECT data FROM message WHERE session_id = ? "
+                "AND json_extract(data, '$.role') = 'assistant'",
+                (session_id,),
+            )
+            total_input = 0
+            total_output = 0
+            total_cost = 0.0
+            n_messages = 0
+            for (data_str,) in cur.fetchall():
+                d = json_mod.loads(data_str)
+                tokens = d.get("tokens", {})
+                total_input += tokens.get("input", 0)
+                total_output += tokens.get("output", 0)
+                total_cost += d.get("cost", 0)
+                n_messages += 1
+
+            db.close()
+
+            if n_messages == 0:
+                return None
+
+            return {
+                "prompt_tokens": total_input,
+                "completion_tokens": total_output,
+                "total_tokens": total_input + total_output,
+                "total_cost_usd": total_cost,
+                "num_messages": n_messages,
+                "source": "opencode_sqlite",
+            }
+        except Exception as e:
+            logger.warning(f"Failed to query OpenCode DB: {e}")
+            return None

@@ -5,17 +5,19 @@ ComparatorAgent. No LLM calls — purely mechanical rules so that grades
 are reproducible and not biased by LLM reasoning.
 """
 
-from ..models.schemas import CellComparison, TableComparison
+import math
+
+from ..models.schemas import CellComparison, ExtractedTable, TableComparison
 from ..utils.logging_utils import get_logger
 
 logger = get_logger(__name__)
 
 # Near-zero absolute thresholds (when |original| < 0.001)
 _NEAR_ZERO_THRESHOLDS = [
-    (0.001, "A"),
-    (0.01, "B"),
+    (0.002, "A"),
+    (0.02, "B"),
     (0.05, "C"),
-    (0.2, "D"),
+    (0.1, "D"),
 ]
 
 
@@ -23,11 +25,11 @@ def grade_cell(cell: CellComparison) -> str:
     """Assign a grade to a single cell comparison.
 
     Grading scale:
-        A: <1% difference (or both zero/near-zero)
-        B: 1-10% difference, same sign
-        C: 10-20% difference, same sign
-        D: 20-50% difference, same sign
-        E: >50% difference, different sign, or significance changed
+        A: <2% difference (or both zero/near-zero)
+        B: 2-20% difference, same sign
+        C: 20-40% difference, same sign
+        D: 40-60% difference, same sign
+        E: >60% difference or sign flip
         F: missing, incomparable, or could not be aligned
     """
     # Missing / incomparable
@@ -57,13 +59,13 @@ def grade_cell(cell: CellComparison) -> str:
     if pct is None:
         return "F"
 
-    if pct < 1:
+    if pct < 2:
         return "A"
-    elif pct < 10:
-        return "B"
     elif pct < 20:
+        return "B"
+    elif pct < 40:
         return "C"
-    elif pct < 50:
+    elif pct < 60:
         return "D"
     else:
         return "E"
@@ -108,3 +110,172 @@ def _compute_overall_grade(cells: list[CellComparison]) -> str:
     if avg >= 0.5:
         return "E"
     return "F"
+
+
+# ---------------------------------------------------------------------------
+# Pre-aligned table grading (no comparator agent needed)
+# ---------------------------------------------------------------------------
+
+
+def grade_aligned_tables(
+    original: ExtractedTable,
+    replicated: ExtractedTable,
+) -> TableComparison:
+    """Grade pre-aligned tables by zipping cells at matching positions.
+
+    Both tables share the same row/column structure (the replicated table
+    was produced from a blinded copy of the original). Cells are matched
+    by (row_label, column_label). String cells and panel headers are skipped.
+
+    Includes lightweight scale detection: if the median ratio across all
+    matched cells is approximately a power of 10, rescaling is applied.
+
+    Returns a fully graded TableComparison.
+    """
+    # Build per-column ordered lists for both original and replicated.
+    # This handles:
+    # - Different cell orderings (column-major vs row-major)
+    # - SE rows with mismatched labels ("" vs "(0.117)")
+    # - Duplicate row labels across panels (e.g. two "R^2" rows)
+    #
+    # Within each column, cells are matched by their position in the column's
+    # sequence, preserving the (coefficient, SE) pairing order.
+
+    def _group_by_column(cells):
+        """Group non-string, non-panel cells by column_label, preserving order."""
+        groups: dict[str, list] = {}
+        for cell in cells:
+            if cell.is_string or cell.row_type == "panel_header":
+                continue
+            groups.setdefault(cell.column_label, []).append(cell)
+        return groups
+
+    def _normalize_col(label: str) -> str:
+        """Normalize column label for fuzzy matching.
+
+        Strips leading '(N)' prefixes (e.g. '(1) OLS' → 'OLS') and
+        normalizes whitespace/case.
+        """
+        import re
+        label = re.sub(r"^\(\d+\)\s*", "", label)
+        return label.strip().lower()
+
+    orig_by_col = _group_by_column(original.cells)
+    repl_by_col = _group_by_column(replicated.cells)
+
+    # Build a fuzzy column mapping: original col → replicated col
+    # First try exact match, then normalized match
+    _col_map: dict[str, str] = {}
+    repl_norm_lookup = {_normalize_col(k): k for k in repl_by_col}
+    for orig_col in orig_by_col:
+        if orig_col in repl_by_col:
+            _col_map[orig_col] = orig_col
+        else:
+            norm = _normalize_col(orig_col)
+            if norm in repl_norm_lookup:
+                _col_map[orig_col] = repl_norm_lookup[norm]
+
+    # Remap orig_by_col keys to replicated column labels
+    mapped_orig_by_col: dict[str, list] = {}
+    for orig_col, cells in orig_by_col.items():
+        mapped_col = _col_map.get(orig_col, orig_col)
+        mapped_orig_by_col.setdefault(mapped_col, []).extend(cells)
+    orig_by_col = mapped_orig_by_col
+
+    # Build a mapping: for each original cell, find its replicated counterpart
+    # by matching within the same column at the same position.
+    _orig_to_repl: dict[int, object] = {}
+    for col_label, orig_col_cells in orig_by_col.items():
+        repl_col_cells = repl_by_col.get(col_label, [])
+        for i, orig_cell in enumerate(orig_col_cells):
+            if i < len(repl_col_cells):
+                _orig_to_repl[id(orig_cell)] = repl_col_cells[i]
+
+    def _find_repl_cell(idx, orig_cell):
+        """Find matching replicated cell by column + position within column."""
+        return _orig_to_repl.get(id(orig_cell))
+
+    # Collect matched numeric pairs for scale detection
+    matched_pairs: list[tuple[float, float]] = []  # (original, replicated)
+    for idx, cell in enumerate(original.cells):
+        if cell.is_string or cell.row_type == "panel_header":
+            continue
+        if cell.numeric_value is None:
+            continue
+        repl_cell = _find_repl_cell(idx, cell)
+        if repl_cell is None or repl_cell.numeric_value is None:
+            continue
+        matched_pairs.append((cell.numeric_value, repl_cell.numeric_value))
+
+    # Detect global scale factor (median ratio, must be ~power of 10)
+    scale_factor = None
+    scale_note = ""
+    if matched_pairs:
+        ratios = []
+        for orig_val, repl_val in matched_pairs:
+            if abs(orig_val) > 1e-10:
+                ratios.append(repl_val / orig_val)
+        if ratios:
+            ratios.sort()
+            median_ratio = ratios[len(ratios) // 2]
+            if abs(median_ratio) > 1e-10:
+                log10 = math.log10(abs(median_ratio))
+                nearest_pow = round(log10)
+                if nearest_pow != 0 and abs(log10 - nearest_pow) < 0.15:
+                    scale_factor = 10.0 ** (-nearest_pow)
+                    scale_note = (
+                        f"Detected scale mismatch: median ratio ≈ 10^{nearest_pow}. "
+                        f"Applied factor {scale_factor} to replicated values."
+                    )
+
+    # Build cell comparisons
+    cell_comparisons: list[CellComparison] = []
+    for idx, cell in enumerate(original.cells):
+        if cell.is_string or cell.row_type == "panel_header":
+            continue
+
+        repl_cell = _find_repl_cell(idx, cell)
+        orig_val = cell.numeric_value
+        repl_val = repl_cell.numeric_value if repl_cell else None
+
+        # Apply scale factor
+        if repl_val is not None and scale_factor is not None:
+            repl_val = repl_val * scale_factor
+
+        # Compute metrics
+        abs_diff = None
+        pct_diff = None
+        sign_match = None
+
+        if orig_val is not None and repl_val is not None:
+            abs_diff = abs(repl_val - orig_val)
+            if abs(orig_val) > 1e-10:
+                pct_diff = (abs_diff / abs(orig_val)) * 100.0
+            elif abs_diff < 1e-10:
+                pct_diff = 0.0
+            else:
+                pct_diff = None  # near-zero original handled by grade_cell
+            sign_match = (orig_val >= 0) == (repl_val >= 0)
+
+        cc = CellComparison(
+            row_label=cell.row_label,
+            column_label=cell.column_label,
+            original_value=orig_val,
+            replicated_value=repl_val,
+            absolute_difference=abs_diff,
+            percent_difference=pct_diff,
+            sign_match=sign_match,
+        )
+        cell_comparisons.append(cc)
+
+    comparison = TableComparison(
+        table_id=original.table_id,
+        cell_comparisons=cell_comparisons,
+        summary=f"Pre-aligned comparison: {len(cell_comparisons)} cells matched by position.",
+        alignment_notes="Cells matched by (row_label, column_label) from blinded template.",
+        scale_factor=scale_factor,
+        scale_note=scale_note,
+    )
+
+    # Apply per-cell and overall grading
+    return grade_table(comparison)

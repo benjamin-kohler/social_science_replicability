@@ -132,7 +132,7 @@ class TestExtractorAgent:
     @patch("src.agents.extractor.OpenAI")
     def test_init(self, mock_openai, config):
         agent = ExtractorAgent(config)
-        assert agent.model == "gpt-5.2"
+        assert agent.model == "gpt-5-mini"
         assert agent.use_vision is True
 
     @patch("src.agents.extractor.OpenAI")

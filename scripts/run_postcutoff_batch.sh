@@ -1,26 +1,26 @@
 #!/usr/bin/env bash
 #
-# run_i4rep_batch.sh — Run the replicability benchmark on all i4replication papers.
+# run_postcutoff_batch.sh — Run the replicability benchmark on post-cutoff papers.
 #
 # Usage:
 #   # Inside tmux on textlab:
-#   tmux new -s i4rep2
-#   bash scripts/run_i4rep_batch.sh
+#   tmux new -s postcutoff
+#   bash scripts/run_postcutoff_batch.sh
 #
 #   # Override defaults via env vars:
-#   PARALLEL=3 APPROACHES="claude-code codex" bash scripts/run_i4rep_batch.sh
-#   PAPERS="10.1111_ajps.12599 10.1086_714765" bash scripts/run_i4rep_batch.sh
+#   PARALLEL=3 APPROACHES="claude-code codex" bash scripts/run_postcutoff_batch.sh
+#   PAPERS="209827 211322" bash scripts/run_postcutoff_batch.sh
 
 set -euo pipefail
 
 # ---------------------------------------------------------------------------
-# Configuration — hardcoded to the correct project path on textlab
+# Configuration
 # ---------------------------------------------------------------------------
 PROJECT_ROOT="/data/individual/benjamin/social_science_replicability"
-PAPERS_DIR="$PROJECT_ROOT/data/i4replicate/papers"
-RESULTS_DIR="$PROJECT_ROOT/data/i4replicate/results"
+PAPERS_DIR="$PROJECT_ROOT/data/postcutoff/papers"
+RESULTS_DIR="$PROJECT_ROOT/data/postcutoff/results"
 CONFIG_DIR="$PROJECT_ROOT/config"
-LOG_FILE="$PROJECT_ROOT/data/i4replicate/batch_run_$(date '+%Y%m%d_%H%M%S').log"
+LOG_FILE="$PROJECT_ROOT/data/postcutoff/batch_run_$(date '+%Y%m%d_%H%M%S').log"
 
 APPROACHES="${APPROACHES:-claude-code codex swe-agent opencode}"
 TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-7200}"
@@ -112,7 +112,7 @@ generate_config() {
     local paper_slug="$1"
     local approach="$2"
     local paper_dir="$PAPERS_DIR/$paper_slug"
-    local config_file="$CONFIG_DIR/i4rep_${paper_slug}_${approach}.yaml"
+    local config_file="$CONFIG_DIR/postcutoff_${paper_slug}_${approach}.yaml"
 
     local provider model_name api_key_env
     provider=$(get_provider_for_approach "$approach")
@@ -120,7 +120,7 @@ generate_config() {
     api_key_env=$(get_api_key_env_for_approach "$approach")
 
     cat > "$config_file" <<YAML
-## Auto-generated config: ${paper_slug} / ${approach}
+## Auto-generated config for postcutoff batch: ${paper_slug} / ${approach}
 
 models:
   - provider: ${provider}
@@ -142,25 +142,21 @@ judge:
   provider: openai
   model_name: ${JUDGE_MODEL}
   use_vision: true
-  comparator_cli_tool: claude-code
-  comparator_model: claude-sonnet-4-6
-  comparator_timeout: 600
 
 extractor:
   model: ${EXTRACTOR_MODEL}
   use_vision: true
 
 run_explainer: true
-explainer_runner_type: claude-code
-explainer_timeout_seconds: 900
-explainer_max_turns: 500
+explainer_runner_type: codex
+explainer_model:
+  provider: openai
+  model_name: gpt-5.3-codex
+  api_key_env: OPENAI_API_KEY
 
 output_dir: ${RESULTS_DIR}/${paper_slug}
-opencode_binary: $HOME/.opencode/bin/opencode
-claude_code_binary: claude
-codex_binary: codex
 timeout_seconds: ${TIMEOUT_SECONDS}
-allow_web_access: true
+allow_web_access: false
 YAML
 
     echo "$config_file"
@@ -189,7 +185,7 @@ has_results() {
 # ---------------------------------------------------------------------------
 main() {
     log_separator
-    log "i4rep batch benchmark"
+    log "Post-cutoff batch benchmark"
     log "  Project:    $PROJECT_ROOT"
     log "  Papers:     $PAPERS_DIR"
     log "  Results:    $RESULTS_DIR"

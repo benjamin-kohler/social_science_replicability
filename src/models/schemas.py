@@ -165,6 +165,11 @@ class PaperSummary(BaseModel):
     figures: list[PlotSpec] = Field(
         default_factory=list, description="Specifications for all figures in main analysis"
     )
+    extracted_tables: list["ExtractedTable"] = Field(
+        default_factory=list,
+        description="Blinded table structures from results extraction (no numeric values). "
+                    "When present, replaces markdown templates for the replicator."
+    )
 
     model_config = {
         "json_schema_extra": {
@@ -211,6 +216,10 @@ class GeneratedTable(BaseModel):
     )
     execution_success: bool = Field(default=True, description="Whether code executed successfully")
     error_message: Optional[str] = Field(default=None, description="Error if execution failed")
+    replicated_extracted_table: Optional["ExtractedTable"] = Field(
+        default=None,
+        description="Structured table output when replicator uses JSON template"
+    )
 
 
 class GeneratedFigure(BaseModel):
@@ -289,6 +298,94 @@ class ExtractedTable(BaseModel):
     )
     notes: Optional[str] = Field(default=None, description="Any extraction notes or warnings")
 
+    def to_csv(self, use_raw_text: bool = False) -> str:
+        """Convert to a CSV string for inspection.
+
+        Groups cells into rows by consecutive (row_label, is_standard_error)
+        so that duplicate row_labels (common for SE rows labeled "( )") are
+        preserved in order rather than deduplicated.
+
+        Args:
+            use_raw_text: If True, use raw_text. If False, use numeric_value
+                          with stars appended for coefficients and parens for SEs.
+        """
+        import io
+        import csv
+
+        col_labels = self.column_labels or []
+
+        # Group cells into rows by consecutive (row_label, is_se).
+        # This preserves the ordering from the JSON and handles repeated
+        # row_labels (e.g. two "( )" SE rows for different coefficients).
+        CsvRow = tuple[str, bool, dict[str, "CellValue"]]  # (label, is_se, col→cell)
+        rows: list[CsvRow] = []
+        for cell in self.cells:
+            key = (cell.row_label, cell.is_standard_error)
+            # Append to current row if same group, otherwise start new row
+            if rows and (rows[-1][0], rows[-1][1]) == key:
+                rows[-1][2][cell.column_label] = cell
+            else:
+                rows.append((cell.row_label, cell.is_standard_error, {cell.column_label: cell}))
+
+        buf = io.StringIO()
+        writer = csv.writer(buf)
+        writer.writerow([""] + col_labels)
+
+        for row_label, is_se, col_cells in rows:
+            # Panel headers
+            sample_cell = next(iter(col_cells.values()), None)
+            if sample_cell and sample_cell.row_type == "panel_header":
+                writer.writerow([row_label] + [""] * len(col_labels))
+                continue
+
+            label = "(SE)" if is_se else row_label
+            csv_row = [label]
+            for cl in col_labels:
+                cell = col_cells.get(cl)
+                if cell is None:
+                    csv_row.append("")
+                elif use_raw_text:
+                    csv_row.append(cell.raw_text)
+                elif cell.is_string:
+                    csv_row.append(cell.raw_text)
+                elif cell.numeric_value is not None:
+                    val = f"{cell.numeric_value}"
+                    if not is_se and cell.significance_stars:
+                        val += "*" * cell.significance_stars
+                    csv_row.append(val)
+                else:
+                    csv_row.append(cell.raw_text)
+            writer.writerow(csv_row)
+
+        return buf.getvalue()
+
+    def to_blinded(self) -> "ExtractedTable":
+        """Return a copy with numeric values removed (blinded for the replicator).
+
+        Keeps structural information: row/column labels, cell positions, row types.
+        String cells (is_string=True) are kept as-is since they're structural (Yes/No).
+        Numeric cells get numeric_value=None, raw_text="", significance cleared.
+        """
+        blinded_cells = []
+        for cell in self.cells:
+            if cell.is_string:
+                blinded_cells.append(cell.model_copy())
+            else:
+                blinded_cells.append(cell.model_copy(update={
+                    "numeric_value": None,
+                    "raw_text": "",
+                    "significance_stars": 0,
+                    "significance_level": None,
+                }))
+        return ExtractedTable(
+            table_id=self.table_id,
+            column_labels=list(self.column_labels),
+            row_labels=list(self.row_labels),
+            cells=blinded_cells,
+            significance_convention=self.significance_convention,
+            notes=self.notes,
+        )
+
 
 class PaperResults(BaseModel):
     """All extracted numeric results from the original paper.
@@ -302,11 +399,44 @@ class PaperResults(BaseModel):
     extraction_timestamp: Optional[str] = Field(default=None)
 
     def get_table(self, table_id: str) -> Optional["ExtractedTable"]:
-        """Look up an extracted table by ID."""
+        """Look up an extracted table by ID.
+
+        Tries exact match first, then prefix match (e.g. "Table 1" matches
+        "Table 1—Average Treatment Effects...").
+        """
         for t in self.tables:
             if t.table_id == table_id:
                 return t
+        # Prefix match: table_id might have caption appended
+        for t in self.tables:
+            if t.table_id.startswith(table_id) and (
+                len(t.table_id) == len(table_id)
+                or t.table_id[len(table_id)] in "—–-:,"
+            ):
+                return t
         return None
+
+    def export_csvs(self, output_dir: str, use_raw_text: bool = False) -> list[str]:
+        """Export all extracted tables as CSV files for inspection.
+
+        Args:
+            output_dir: Directory to write CSV files to.
+            use_raw_text: If True, use raw_text from the paper. If False,
+                          use parsed numeric_value with stars/parens.
+
+        Returns:
+            List of written file paths.
+        """
+        from pathlib import Path
+        out = Path(output_dir)
+        out.mkdir(parents=True, exist_ok=True)
+        paths = []
+        for table in self.tables:
+            fname = table.table_id.replace(" ", "_").lower() + ".csv"
+            path = out / fname
+            path.write_text(table.to_csv(use_raw_text=use_raw_text))
+            paths.append(str(path))
+        return paths
 
 
 # =============================================================================

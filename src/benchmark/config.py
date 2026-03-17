@@ -51,7 +51,7 @@ class JudgeConfig(BaseModel):
 class ExtractorConfig(BaseModel):
     """Configuration for the extractor model used for methodology extraction."""
 
-    model: str = Field(default="gpt-5.2", description="Model for extraction API calls")
+    model: str = Field(default="gpt-5-mini", description="Model for extraction API calls")
     max_tokens: int = Field(default=128000, description="Max output tokens per call")
     use_vision: bool = Field(default=True, description="Send PDF pages as images")
     vision_dpi: int = Field(default=200, description="DPI for PDF-to-image conversion")

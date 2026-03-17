@@ -33,7 +33,7 @@ from ..models.schemas import (
 from ..utils.logging_utils import get_logger
 from ..utils.pdf_parser import extract_text_from_pdf, pdf_to_base64_images
 from .comparator import ComparatorAgent
-from .grader import grade_table
+from .grader import grade_aligned_tables, grade_table
 
 logger = get_logger(__name__)
 
@@ -63,8 +63,43 @@ Grading scale:
 - E: Results differ meaningfully — different significance, direction, or >50% difference.
 - F: Not comparable — missing output, incompatible format, or unable to verify.
 
-Focus on substance, not formatting or presentation. For figures, compare
-patterns and trends, not exact visual appearance."""
+Focus on substance, not formatting or presentation."""
+
+
+FIGURE_JUDGE_SYSTEM_PROMPT = """You are a judge evaluating how closely a replicated figure matches the original from a research paper.
+
+The replicator was given a figure template specifying the plot type, axes, and layout — so differences in figure structure are unexpected. Focus largely on how closely the plotted data matches.
+
+Grading scale for figures:
+
+- A: The plotted data is visually indistinguishable or nearly so. All curves, points,
+  bars, or distributions match in shape, magnitude, and position. Small numerical
+  differences not visible at normal viewing are acceptable. Cosmetic differences
+  (colors, fonts, line thickness, legend placement) never affect the grade.
+
+- B: The data patterns clearly match but there are visible differences in some values,
+  curve shapes, or magnitudes. The qualitative conclusions from the figure would be
+  identical. Examples: slightly different confidence band widths, small vertical
+  shifts in otherwise parallel curves, minor differences in bar heights.
+
+- C: The overall data pattern is recognizable but there are noticeable quantitative
+  discrepancies. Some series or data points diverge visibly. The main finding is
+  preserved but a reader would notice differences.
+
+- D: The data patterns differ substantially. Trends may be weaker, shifted, or
+  partially reversed. A reader would draw partially different conclusions.
+
+- E: The plotted data shows fundamentally different patterns — wrong direction,
+  missing key features, flat where there should be variation, or clearly wrong
+  magnitudes.
+
+- F: Not comparable — missing figure, blank plot, or unable to verify.
+
+Important:
+- Compare panel by panel if the figure has multiple panels.
+- If one panel matches closely but another diverges, average across panels.
+- Ignore all cosmetic/formatting differences entirely.
+"""
 
 FIGURE_JUDGE_PROMPT = """How closely does the replicated {item_id} match the original?
 
@@ -511,10 +546,14 @@ class Judge:
                 None,
             )
 
-        # --- Comparator path (preferred) ---
-        if original_table and original_table.cells and self._comparator:
-            return self._judge_table_comparator(
-                gen_table, original_table, item_id,
+        # --- Pre-aligned JSON path (preferred) ---
+        if (
+            gen_table.replicated_extracted_table
+            and original_table
+            and original_table.cells
+        ):
+            return self._judge_table_aligned(
+                gen_table.replicated_extracted_table, original_table, item_id,
             )
 
         # --- Fallback: LLM-only judging (no extracted results available) ---
@@ -522,6 +561,72 @@ class Judge:
         return self._judge_table_llm_fallback(
             gen_table, spec, paper_text, page_images,
         )
+
+    def _judge_table_aligned(
+        self,
+        replicated_table: ExtractedTable,
+        original_table: ExtractedTable,
+        item_id: str,
+    ) -> tuple[ItemVerification, DiscrepancyAnalysis | None]:
+        """Judge a table using pre-aligned JSON templates (no comparator agent)."""
+        try:
+            comparison = grade_aligned_tables(original_table, replicated_table)
+
+            try:
+                grade = ReplicationGrade(comparison.overall_grade)
+            except ValueError:
+                grade = ReplicationGrade.F
+
+            num_diffs = {}
+            if comparison.cell_comparisons:
+                pct_diffs = [
+                    c.percent_difference for c in comparison.cell_comparisons
+                    if c.percent_difference is not None
+                ]
+                if pct_diffs:
+                    num_diffs = {
+                        "max_difference_percent": max(pct_diffs),
+                        "mean_difference_percent": sum(pct_diffs) / len(pct_diffs),
+                        "num_cells_compared": len(comparison.cell_comparisons),
+                    }
+
+            verification = ItemVerification(
+                item_id=item_id,
+                item_type="table",
+                grade=grade,
+                comparison_notes=comparison.summary,
+                numerical_differences=num_diffs or None,
+                key_findings_match=grade in (ReplicationGrade.A, ReplicationGrade.B),
+                table_comparison=comparison,
+            )
+
+            analysis = None
+            if grade != ReplicationGrade.A:
+                analysis = DiscrepancyAnalysis(
+                    item_id=item_id,
+                    grade=grade,
+                    description_of_discrepancy=comparison.summary,
+                    likely_causes=[comparison.alignment_notes] if comparison.alignment_notes else [],
+                    is_identifiable=True,
+                    fault_attribution="unclear",
+                    confidence="medium",
+                    supporting_evidence=f"Pre-aligned comparison: {len(comparison.cell_comparisons)} cells compared",
+                )
+
+            logger.info(f"Pre-aligned grading for {item_id}: {grade.value}")
+            return verification, analysis
+
+        except Exception as e:
+            logger.error(f"Pre-aligned grading failed for {item_id}: {e}")
+            return (
+                ItemVerification(
+                    item_id=item_id, item_type="table",
+                    grade=ReplicationGrade.F,
+                    comparison_notes=f"Pre-aligned grading error: {e}",
+                    judge_error=True,
+                ),
+                None,
+            )
 
     def _judge_table_comparator(
         self,
@@ -755,12 +860,12 @@ Respond with ONLY this JSON (no other text):
 
             if self.provider in _STRUCTURED_PROVIDERS:
                 parsed = self._call_llm_vision_multi_structured(
-                    JUDGE_SYSTEM_PROMPT, prompt, all_images, FigureJudgment,
+                    FIGURE_JUDGE_SYSTEM_PROMPT, prompt, all_images, FigureJudgment,
                 )
                 resp = parsed.model_dump()
             else:
                 raw = self._call_llm_vision_multi(
-                    JUDGE_SYSTEM_PROMPT, prompt, all_images,
+                    FIGURE_JUDGE_SYSTEM_PROMPT, prompt, all_images,
                 )
                 resp = self._parse_json(raw)
         except Exception as e:
@@ -773,11 +878,11 @@ Respond with ONLY this JSON (no other text):
             try:
                 if self.provider in _STRUCTURED_PROVIDERS:
                     parsed = self._call_llm_structured(
-                        JUDGE_SYSTEM_PROMPT, text_prompt, FigureJudgment,
+                        FIGURE_JUDGE_SYSTEM_PROMPT, text_prompt, FigureJudgment,
                     )
                     resp = parsed.model_dump()
                 else:
-                    resp = self._parse_json_with_retry(JUDGE_SYSTEM_PROMPT, text_prompt)
+                    resp = self._parse_json_with_retry(FIGURE_JUDGE_SYSTEM_PROMPT, text_prompt)
             except Exception as e2:
                 logger.error(f"Judge call failed for {item_id}: {e2}")
                 return (

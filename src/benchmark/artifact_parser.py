@@ -5,6 +5,7 @@ import re
 from pathlib import Path
 
 from ..models.schemas import (
+    ExtractedTable,
     GeneratedCode,
     GeneratedFigure,
     GeneratedTable,
@@ -37,9 +38,15 @@ class ArtifactParser:
             logger.warning(f"Workspace directory does not exist: {workspace_dir}")
             return ReplicationResults(paper_id=paper_id)
 
+        # Directories to skip (e.g., table_templates/ contains blank templates, not results)
+        skip_dirs = {"table_templates", "csv_export", "__pycache__", ".git"}
+
         order = 0
         for path in sorted(workspace_dir.rglob("*")):
             if not path.is_file():
+                continue
+            # Skip files inside excluded directories
+            if any(part in skip_dirs for part in path.relative_to(workspace_dir).parts[:-1]):
                 continue
             suffix = path.suffix.lower()
 
@@ -58,6 +65,17 @@ class ArtifactParser:
             elif suffix in TABLE_EXTENSIONS and _is_table_file(path.stem):
                 data = _load_table_data(path)
                 table_number = _infer_item_number(path.stem, "Table")
+
+                # Attempt to parse as ExtractedTable (JSON template output)
+                replicated_et = None
+                if suffix == ".json" and isinstance(data, dict):
+                    try:
+                        et = ExtractedTable(**data)
+                        if et.cells:
+                            replicated_et = et
+                    except Exception:
+                        pass  # treat as generic JSON table data
+
                 tables.append(
                     GeneratedTable(
                         table_number=table_number,
@@ -65,6 +83,7 @@ class ArtifactParser:
                         format="csv" if suffix == ".csv" else "json",
                         code_reference=path.name,
                         execution_success=True,
+                        replicated_extracted_table=replicated_et,
                     )
                 )
 

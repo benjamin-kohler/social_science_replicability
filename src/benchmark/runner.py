@@ -160,6 +160,18 @@ class BenchmarkRunner:
             logger.info(f"Using cached summary for {paper.paper_id}")
             return self._summary_cache[paper.paper_id]
 
+        # Check on-disk cache
+        summary_path = self.output_dir / "summaries" / f"{paper.paper_id}_summary.json"
+        if summary_path.exists():
+            try:
+                data = json.loads(summary_path.read_text())
+                summary = PaperSummary(**data)
+                self._summary_cache[paper.paper_id] = summary
+                logger.info(f"Loaded cached summary for {paper.paper_id} from disk")
+                return summary
+            except Exception as e:
+                logger.warning(f"Could not load cached summary: {e}")
+
         logger.info(f"Extracting methodology summary for {paper.paper_id} using judge model")
 
         judge = self.config.judge
@@ -414,15 +426,63 @@ class BenchmarkRunner:
             f"{len(self.config.approaches)} approaches)"
         )
 
-        # Pre-extract summaries and original results for all papers
+        # Pre-extract summaries and original results for all papers.
+        # When results extraction succeeds, inject blinded table skeletons into
+        # the summary so the replicator gets pre-aligned JSON templates.
+        # If the results extractor returns fewer tables than the summary specifies,
+        # retry up to MAX_EXTRACTION_RETRIES times (clearing cache to force re-run).
+        MAX_EXTRACTION_RETRIES = 3
         for paper in self.config.papers:
             try:
                 summary = self._extract_summary(paper)
-                # Extract original table values (for programmatic comparison)
+                n_summary_tables = len(summary.tables)
+
                 try:
-                    self._extract_results(paper, summary)
+                    paper_results = None
+                    for attempt in range(1, MAX_EXTRACTION_RETRIES + 1):
+                        paper_results = self._extract_results(paper, summary)
+                        n_extracted_with_cells = sum(
+                            1 for t in paper_results.tables if t.cells
+                        )
+
+                        if n_extracted_with_cells >= n_summary_tables:
+                            break
+
+                        if attempt < MAX_EXTRACTION_RETRIES:
+                            logger.warning(
+                                f"Results extraction for {paper.paper_id}: "
+                                f"{n_extracted_with_cells}/{n_summary_tables} tables "
+                                f"have cells (attempt {attempt}/{MAX_EXTRACTION_RETRIES}). "
+                                f"Retrying..."
+                            )
+                            # Clear caches to force re-extraction
+                            self._results_cache.pop(paper.paper_id, None)
+                            results_path = self.output_dir / "summaries" / f"{paper.paper_id}_results.json"
+                            if results_path.exists():
+                                results_path.unlink()
+                        else:
+                            logger.warning(
+                                f"Results extraction for {paper.paper_id}: "
+                                f"{n_extracted_with_cells}/{n_summary_tables} tables "
+                                f"have cells after {MAX_EXTRACTION_RETRIES} attempts. "
+                                f"Proceeding with partial extraction."
+                            )
+
+                    blinded = [t.to_blinded() for t in paper_results.tables if t.cells]
+                    summary.extracted_tables = blinded
+                    self._summary_cache[paper.paper_id] = summary
+                    # Re-persist enriched summary
+                    summary_path = self.output_dir / "summaries" / f"{paper.paper_id}_summary.json"
+                    summary_path.write_text(
+                        json.dumps(summary.model_dump(), indent=2, default=str)
+                    )
+                    logger.info(
+                        f"Injected {len(blinded)}/{n_summary_tables} blinded tables "
+                        f"into summary for {paper.paper_id}"
+                    )
                 except Exception as e:
                     logger.warning(f"Failed to extract results for {paper.paper_id}: {e}")
+                    logger.warning("Falling back to markdown templates for this paper")
             except Exception as e:
                 logger.error(f"Failed to extract summary for {paper.paper_id}: {e}")
 

@@ -203,10 +203,36 @@ class SweAgentRunner(BaseReplicationRunner):
         # Save usage if agent ran
         usage = None
         if agent is not None:
+            cost = getattr(agent, "cost", 0)
+            n_calls = getattr(agent, "n_calls", 0)
             usage = {
-                "total_cost_usd": getattr(agent, "cost", 0),
-                "num_calls": getattr(agent, "n_calls", 0),
+                "total_cost_usd": cost,
+                "num_calls": n_calls,
             }
+
+            # Extract token counts from agent stats or trajectory file
+            stats = getattr(agent, "stats", None)
+            if stats is not None:
+                usage["prompt_tokens"] = getattr(stats, "tokens_sent", 0)
+                usage["completion_tokens"] = getattr(stats, "tokens_received", 0)
+                usage["total_tokens"] = usage["prompt_tokens"] + usage["completion_tokens"]
+
+            # Fallback: parse trajectory file for model_stats
+            if "prompt_tokens" not in usage or usage.get("prompt_tokens", 0) == 0:
+                traj_path = workspace_dir / "trajectory.json"
+                if traj_path.exists():
+                    try:
+                        traj = json_mod.loads(traj_path.read_text())
+                        ms = (traj.get("info", {}) or {}).get("model_stats", {})
+                        ts = ms.get("tokens_sent", 0)
+                        tr = ms.get("tokens_received", 0)
+                        if ts > 0 or tr > 0:
+                            usage["prompt_tokens"] = ts
+                            usage["completion_tokens"] = tr
+                            usage["total_tokens"] = ts + tr
+                    except Exception:
+                        pass
+
             usage_path = workspace_dir.parent / "usage.json"
             usage_path.write_text(json_mod.dumps(usage, indent=2))
 

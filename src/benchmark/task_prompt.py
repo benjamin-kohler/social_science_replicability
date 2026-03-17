@@ -4,7 +4,7 @@ import json
 import shutil
 from pathlib import Path
 
-from ..models.schemas import PaperSummary
+from ..models.schemas import ExtractedTable, PaperSummary
 from .config import PaperSpec
 
 # Instructions written into each workspace as both CLAUDE.md (Claude Code reads
@@ -76,16 +76,24 @@ You are in an isolated workspace for fair benchmarking.
    steps described above. All table/figure scripts can import from this module.
 
 3. **Write and execute one script at a time**: For each table/figure:
-   a. Write the script (e.g., `table_1.py` → `table_1.csv`)
+   a. Write the script (see output filename specified for each table/figure above)
    b. Execute it
    c. Fix any errors immediately
    d. Move on to the next item once the output file is verified
 
-   Suggested naming: `table_2.1.py` → `table_2.1.csv`, `figure_3.1.py` → `figure_3.1.png`
+   **Table output format**: Load the JSON template from `table_templates/`,
+   run your regressions, and fill in each cell's fields:
+   - `raw_text`: the formatted value as it would appear in the paper (e.g. "0.523***", "(0.102)", "Yes")
+   - `numeric_value`: the numeric value (float), or null if the cell is non-numeric
+   Write the completed table as `.json` using the same schema.
+   Figures: write as `.png`.
 
-4. Execute every script and verify the output file exists.
+4. **R packages**: If the paper's methodology requires R-specific packages
+   (e.g. for specialized estimators), you can call R from Python using `rpy2`.
 
-5. Save all outputs in the current working directory.
+5. Execute every script and verify the output file exists.
+
+6. Save all outputs in the current working directory.
 
 **Reasonable assumptions.** Where the methodology description is incomplete or
 ambiguous, you are free to make reasonable assumptions based on common practice
@@ -230,6 +238,9 @@ def setup_workspace_paper_direct(
     (workspace_dir / "CLAUDE.md").write_text(WORKSPACE_INSTRUCTIONS)
     (workspace_dir / "AGENTS.md").write_text(WORKSPACE_INSTRUCTIONS)
 
+    # OpenCode project config: allow all permissions (symlinks, bash, etc.)
+    _write_opencode_config(workspace_dir)
+
     return data_filename
 
 
@@ -256,14 +267,48 @@ def build_task_prompt(summary: PaperSummary, data_filename: str) -> str:
     else:
         steps = "No specific steps listed."
 
+    # Build lookup for blinded extracted tables.
+    # Key by exact table_id AND by normalized prefix (e.g. "Table 1") so that
+    # "Table 1—Average Treatment Effects..." matches TableSpec "Table 1".
+    blinded_lookup: dict[str, "ExtractedTable"] = {}
+    for et in (summary.extracted_tables or []):
+        blinded_lookup[et.table_id] = et
+        # Also key by prefix up to first dash/colon/emdash after the number
+        import re
+        prefix_match = re.match(r"((?:Table|Figure)\s+\S+)", et.table_id)
+        if prefix_match:
+            blinded_lookup.setdefault(prefix_match.group(1), et)
+
     # Format table specs
     if summary.tables:
         table_parts = []
         for t in summary.tables:
-            table_filename = t.table_number.replace(" ", "_").lower() + ".csv"
-            script_name = t.table_number.replace(" ", "_").lower() + ".py"
-            part = f"### {t.table_number}: {t.caption}\n"
-            part += f"**Script**: `{script_name}` → **Output**: `{table_filename}`\n"
+            matched_et = blinded_lookup.get(t.table_number)
+
+            if matched_et:
+                # JSON template path: output as .json, show blinded structure
+                table_filename = t.table_number.replace(" ", "_").lower() + ".json"
+                script_name = t.table_number.replace(" ", "_").lower() + ".py"
+                part = f"### {t.table_number}: {t.caption}\n"
+                part += f"**Script**: `{script_name}` → **Output**: `{table_filename}`\n"
+                part += (
+                    "\n**JSON template** — A blinded table skeleton is provided in "
+                    f"`table_templates/{t.table_number.replace(' ', '_').lower()}.json`. "
+                    "For each cell, fill in `raw_text` (formatted value, e.g. "
+                    "\"0.523***\", \"(0.102)\", \"Yes\") and `numeric_value` (float, "
+                    "or null for non-numeric cells) based on your regression results. "
+                    f"Write the completed table as `{table_filename}` using the same schema.\n"
+                )
+                # Show the blinded structure inline for reference
+                blinded_json = json.dumps(matched_et.model_dump(), indent=2, default=str)
+                part += f"\n<details><summary>Blinded table structure (click to expand)</summary>\n\n```json\n{blinded_json}\n```\n</details>\n"
+            else:
+                # No blinded template available — still use JSON output
+                table_filename = t.table_number.replace(" ", "_").lower() + ".json"
+                script_name = t.table_number.replace(" ", "_").lower() + ".py"
+                part = f"### {t.table_number}: {t.caption}\n"
+                part += f"**Script**: `{script_name}` → **Output**: `{table_filename}`\n"
+
             if t.column_names:
                 part += f"- Columns: {', '.join(t.column_names)}\n"
             if t.row_names:
@@ -295,7 +340,7 @@ def build_task_prompt(summary: PaperSummary, data_filename: str) -> str:
                     part += "\n"
             if t.notes:
                 part += f"- Notes: {t.notes}\n"
-            if t.template_markdown:
+            if not matched_et and t.template_markdown:
                 part += f"\n**Structural template** (your output MUST match this structure — replace XXX with computed values, leave empty cells empty):\n\n{t.template_markdown}\n"
             table_parts.append(part)
         table_specs = "\n".join(table_parts)
@@ -342,7 +387,7 @@ def build_task_prompt(summary: PaperSummary, data_filename: str) -> str:
             if f.notes:
                 part += f"- Notes: {f.notes}\n"
             if f.template_code:
-                part += f"\n**Code skeleton** (use this as a starting point for the figure):\n\n```python\n{f.template_code}\n```\n"
+                part += f"\n**Code skeleton** (use this as a starting point — you may adjust layout, colors, or labels to enhance readability):\n\n```python\n{f.template_code}\n```\n"
             fig_parts.append(part)
         figure_specs = "\n".join(fig_parts)
     else:
@@ -366,6 +411,13 @@ def build_task_prompt(summary: PaperSummary, data_filename: str) -> str:
         processing_steps=steps,
         table_specs=table_specs,
         figure_specs=figure_specs,
+    )
+
+
+def _write_opencode_config(workspace_dir: Path) -> None:
+    """Write opencode.json to auto-approve all tool calls (symlinks, bash, etc.)."""
+    (workspace_dir / "opencode.json").write_text(
+        json.dumps({"permission": {"*": "allow"}}, indent=2)
     )
 
 
@@ -414,8 +466,33 @@ def setup_workspace(
         json.dumps(paper_summary.model_dump(), indent=2, default=str)
     )
 
+    # Write blinded JSON templates so replicator code can json.load() them.
+    # Filenames use the normalized table_number from the TableSpec (e.g. "table_1.json"),
+    # matched to extracted tables via the same prefix lookup used in build_task_prompt().
+    if paper_summary.extracted_tables:
+        import re
+        blinded_lookup: dict[str, "ExtractedTable"] = {}
+        for et in paper_summary.extracted_tables:
+            blinded_lookup[et.table_id] = et
+            prefix_match = re.match(r"((?:Table|Figure)\s+\S+)", et.table_id)
+            if prefix_match:
+                blinded_lookup.setdefault(prefix_match.group(1), et)
+
+        templates_dir = workspace_dir / "table_templates"
+        templates_dir.mkdir(parents=True, exist_ok=True)
+        for t in paper_summary.tables:
+            matched_et = blinded_lookup.get(t.table_number)
+            if matched_et:
+                fname = t.table_number.replace(" ", "_").lower() + ".json"
+                (templates_dir / fname).write_text(
+                    json.dumps(matched_et.model_dump(), indent=2, default=str)
+                )
+
     # Write workspace instructions as both CLAUDE.md and AGENTS.md
     (workspace_dir / "CLAUDE.md").write_text(WORKSPACE_INSTRUCTIONS)
     (workspace_dir / "AGENTS.md").write_text(WORKSPACE_INSTRUCTIONS)
+
+    # OpenCode project config: allow all permissions (symlinks, bash, etc.)
+    _write_opencode_config(workspace_dir)
 
     return data_filename
