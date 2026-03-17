@@ -263,6 +263,12 @@ class CellValue(BaseModel):
 
     row_label: str = Field(..., description="Row label as it appears in the paper")
     column_label: str = Field(..., description="Column label as it appears in the paper")
+    row_index: Optional[int] = Field(
+        default=None, description="Zero-based row index in the table grid"
+    )
+    col_index: Optional[int] = Field(
+        default=None, description="Zero-based column index in the table grid"
+    )
     raw_text: str = Field(..., description="Exact text as it appears in the paper cell")
     numeric_value: Optional[float] = Field(
         default=None, description="Parsed numeric value (None if non-numeric)"

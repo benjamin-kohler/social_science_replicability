@@ -35,6 +35,8 @@ class CellValueResponse(BaseModel):
 
     row_label: str = Field(..., description="Row label exactly as in the paper")
     column_label: str = Field(..., description="Column header exactly as in the paper")
+    row_index: int = Field(..., description="Zero-based row index in the table grid (0 = first data row, counting every row including SE rows and panel headers)")
+    col_index: int = Field(..., description="Zero-based column index in the table grid (0 = first data column, not counting the row-label column)")
     raw_text: str = Field(
         ...,
         description="Exact text in the cell as printed in the paper, "
@@ -306,6 +308,8 @@ class ResultsExtractor:
             CellValue(
                 row_label=c.row_label,
                 column_label=c.column_label,
+                row_index=c.row_index,
+                col_index=c.col_index,
                 raw_text=c.raw_text,
                 numeric_value=c.numeric_value,
                 is_standard_error=c.is_standard_error,

@@ -132,67 +132,83 @@ def grade_aligned_tables(
 
     Returns a fully graded TableComparison.
     """
-    # Build per-column ordered lists for both original and replicated.
-    # This handles:
-    # - Different cell orderings (column-major vs row-major)
-    # - SE rows with mismatched labels ("" vs "(0.117)")
-    # - Duplicate row labels across panels (e.g. two "R^2" rows)
-    #
-    # Within each column, cells are matched by their position in the column's
-    # sequence, preserving the (coefficient, SE) pairing order.
+    import re
 
-    def _group_by_column(cells):
-        """Group non-string, non-panel cells by column_label, preserving order."""
-        groups: dict[str, list] = {}
-        for cell in cells:
+    # --- Strategy 1: Match by (row_index, col_index) when available ---
+    # This is the most robust approach: both tables share the same grid
+    # coordinates from the blinded template.
+    _has_indices = (
+        all(c.row_index is not None and c.col_index is not None for c in original.cells if not c.is_string and c.row_type != "panel_header")
+        and any(c.row_index is not None and c.col_index is not None for c in replicated.cells if not c.is_string and c.row_type != "panel_header")
+    )
+
+    if _has_indices:
+        repl_by_idx = {}
+        for cell in replicated.cells:
+            if cell.row_index is not None and cell.col_index is not None:
+                repl_by_idx[(cell.row_index, cell.col_index)] = cell
+
+        _orig_to_repl: dict[int, object] = {}
+        for cell in original.cells:
             if cell.is_string or cell.row_type == "panel_header":
                 continue
-            groups.setdefault(cell.column_label, []).append(cell)
-        return groups
+            if cell.row_index is not None and cell.col_index is not None:
+                repl_cell = repl_by_idx.get((cell.row_index, cell.col_index))
+                if repl_cell is not None:
+                    _orig_to_repl[id(cell)] = repl_cell
 
-    def _normalize_col(label: str) -> str:
-        """Normalize column label for fuzzy matching.
+        logger.info(f"Matched {len(_orig_to_repl)} cells by (row_index, col_index)")
 
-        Strips leading '(N)' prefixes (e.g. '(1) OLS' → 'OLS') and
-        normalizes whitespace/case.
-        """
-        import re
-        label = re.sub(r"^\(\d+\)\s*", "", label)
-        return label.strip().lower()
+    else:
+        # --- Strategy 2: Column-position matching (fallback) ---
+        # Groups cells by column, matches by position within column.
+        # Handles different orderings, label mismatches, extra rows.
 
-    orig_by_col = _group_by_column(original.cells)
-    repl_by_col = _group_by_column(replicated.cells)
+        def _group_by_column(cells):
+            """Group non-string, non-panel cells by column_label, preserving order."""
+            groups: dict[str, list] = {}
+            for cell in cells:
+                if cell.is_string or cell.row_type == "panel_header":
+                    continue
+                groups.setdefault(cell.column_label, []).append(cell)
+            return groups
 
-    # Build a fuzzy column mapping: original col → replicated col
-    # First try exact match, then normalized match
-    _col_map: dict[str, str] = {}
-    repl_norm_lookup = {_normalize_col(k): k for k in repl_by_col}
-    for orig_col in orig_by_col:
-        if orig_col in repl_by_col:
-            _col_map[orig_col] = orig_col
-        else:
-            norm = _normalize_col(orig_col)
-            if norm in repl_norm_lookup:
-                _col_map[orig_col] = repl_norm_lookup[norm]
+        def _normalize_col(label: str) -> str:
+            """Strip leading '(N)' prefixes and normalize."""
+            label = re.sub(r"^\(\d+\)\s*", "", label)
+            return label.strip().lower()
 
-    # Remap orig_by_col keys to replicated column labels
-    mapped_orig_by_col: dict[str, list] = {}
-    for orig_col, cells in orig_by_col.items():
-        mapped_col = _col_map.get(orig_col, orig_col)
-        mapped_orig_by_col.setdefault(mapped_col, []).extend(cells)
-    orig_by_col = mapped_orig_by_col
+        orig_by_col = _group_by_column(original.cells)
+        repl_by_col = _group_by_column(replicated.cells)
 
-    # Build a mapping: for each original cell, find its replicated counterpart
-    # by matching within the same column at the same position.
-    _orig_to_repl: dict[int, object] = {}
-    for col_label, orig_col_cells in orig_by_col.items():
-        repl_col_cells = repl_by_col.get(col_label, [])
-        for i, orig_cell in enumerate(orig_col_cells):
-            if i < len(repl_col_cells):
-                _orig_to_repl[id(orig_cell)] = repl_col_cells[i]
+        # Fuzzy column mapping
+        _col_map: dict[str, str] = {}
+        repl_norm_lookup = {_normalize_col(k): k for k in repl_by_col}
+        for orig_col in orig_by_col:
+            if orig_col in repl_by_col:
+                _col_map[orig_col] = orig_col
+            else:
+                norm = _normalize_col(orig_col)
+                if norm in repl_norm_lookup:
+                    _col_map[orig_col] = repl_norm_lookup[norm]
+
+        mapped_orig_by_col: dict[str, list] = {}
+        for orig_col, cells in orig_by_col.items():
+            mapped_col = _col_map.get(orig_col, orig_col)
+            mapped_orig_by_col.setdefault(mapped_col, []).extend(cells)
+        orig_by_col = mapped_orig_by_col
+
+        _orig_to_repl: dict[int, object] = {}
+        for col_label, orig_col_cells in orig_by_col.items():
+            repl_col_cells = repl_by_col.get(col_label, [])
+            for i, orig_cell in enumerate(orig_col_cells):
+                if i < len(repl_col_cells):
+                    _orig_to_repl[id(orig_cell)] = repl_col_cells[i]
+
+        logger.info(f"Matched {len(_orig_to_repl)} cells by column-position (fallback)")
 
     def _find_repl_cell(idx, orig_cell):
-        """Find matching replicated cell by column + position within column."""
+        """Find matching replicated cell."""
         return _orig_to_repl.get(id(orig_cell))
 
     # Collect matched numeric pairs for scale detection
