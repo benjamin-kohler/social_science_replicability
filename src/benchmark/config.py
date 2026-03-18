@@ -93,6 +93,10 @@ class BenchmarkConfig(BaseModel):
     opencode_binary: str = Field(default="opencode", description="Path to opencode binary")
     claude_code_binary: str = Field(default="claude", description="Path to claude CLI binary")
     codex_binary: str = Field(default="codex", description="Path to codex CLI binary")
+    item_types: list[str] = Field(
+        default=["table", "figure"],
+        description="Item types to replicate and evaluate: 'table', 'figure', or both",
+    )
     timeout_seconds: int = Field(default=600, description="Timeout per run in seconds")
     allow_web_access: bool = Field(
         default=False,

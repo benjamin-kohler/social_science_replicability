@@ -76,37 +76,31 @@ class BenchmarkRunner:
             if env_var not in self.api_keys:
                 self.api_keys[env_var] = os.environ.get(env_var, "")
 
-        self.evaluator = SharedEvaluator(config.judge, api_keys=self.api_keys)
+        self.evaluator = SharedEvaluator(
+            config.judge, api_keys=self.api_keys,
+            item_types=config.item_types,
+        )
 
         # --- Runners ---------------------------------------------------------
+        _common = dict(
+            timeout=config.timeout_seconds,
+            allow_web_access=config.allow_web_access,
+            item_types=config.item_types,
+        )
         self._runners: dict[str, BaseReplicationRunner] = {
             "freestyle": OpencodeRunner(
-                opencode_binary=config.opencode_binary,
-                timeout=config.timeout_seconds,
-                allow_web_access=config.allow_web_access,
+                opencode_binary=config.opencode_binary, **_common,
             ),
-            "structured": StructuredRunner(
-                timeout=config.timeout_seconds,
-                allow_web_access=config.allow_web_access,
-            ),
+            "structured": StructuredRunner(**_common),
             "claude-code": ClaudeCodeRunner(
-                claude_binary=config.claude_code_binary,
-                timeout=config.timeout_seconds,
-                allow_web_access=config.allow_web_access,
+                claude_binary=config.claude_code_binary, **_common,
             ),
             "codex": CodexRunner(
-                codex_binary=config.codex_binary,
-                timeout=config.timeout_seconds,
-                allow_web_access=config.allow_web_access,
+                codex_binary=config.codex_binary, **_common,
             ),
-            "swe-agent": SweAgentRunner(
-                timeout=config.timeout_seconds,
-                allow_web_access=config.allow_web_access,
-            ),
+            "swe-agent": SweAgentRunner(**_common),
             "opencode": OpencodeRunner(
-                opencode_binary=config.opencode_binary,
-                timeout=config.timeout_seconds,
-                allow_web_access=config.allow_web_access,
+                opencode_binary=config.opencode_binary, **_common,
             ),
         }
 

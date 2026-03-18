@@ -39,12 +39,7 @@ The dataset is located at: `{data_filename}`
 **Data Processing Steps**:
 {processing_steps}
 
-**Tables to Replicate**:
-{table_specs}
-
-**Figures to Replicate**:
-{figure_specs}
-
+{items_section}
 ## Constraints
 
 You are in an isolated workspace for fair benchmarking.
@@ -73,21 +68,14 @@ You are in an isolated workspace for fair benchmarking.
    detail, so a brief check should suffice.
 
 2. **Write `prepare_data.py`**: Load and clean the data following the processing
-   steps described above. All table/figure scripts can import from this module.
+   steps described above. All scripts can import from this module.
 
-3. **Write and execute one script at a time**: For each table/figure:
-   a. Write the script (see output filename specified for each table/figure above)
+3. **Write and execute one script at a time**: For each item:
+   a. Write the script (see output filename specified for each item above)
    b. Execute it
    c. Fix any errors immediately
    d. Move on to the next item once the output file is verified
-
-   **Table output format**: Load the JSON template from `table_templates/`,
-   run your regressions, and fill in each cell's fields:
-   - `raw_text`: the formatted value as it would appear in the paper (e.g. "0.523***", "(0.102)", "Yes")
-   - `numeric_value`: the numeric value (float), or null if the cell is non-numeric
-   Write the completed table as `.json` using the same schema.
-   Figures: write as `.png`.
-
+{table_instructions}{figure_instructions}
 4. **R packages**: If the paper's methodology requires R-specific packages
    (e.g. for specialized estimators), you can call R from Python using `rpy2`.
 
@@ -244,16 +232,24 @@ def setup_workspace_paper_direct(
     return data_filename
 
 
-def build_task_prompt(summary: PaperSummary, data_filename: str) -> str:
+def build_task_prompt(
+    summary: PaperSummary,
+    data_filename: str,
+    item_types: list[str] | None = None,
+) -> str:
     """Generate the task prompt from a methodology summary.
 
     Args:
         summary: Pre-extracted methodology summary (no results).
         data_filename: Filename or directory name for the data in the workspace.
+        item_types: Item types to include ('table', 'figure', or both).
+            Defaults to both.
 
     Returns:
         Formatted task prompt string.
     """
+    if item_types is None:
+        item_types = ["table", "figure"]
     # Format research questions
     rqs = "\n".join(f"- {q}" for q in summary.research_questions) or "- Not specified"
 
@@ -280,7 +276,7 @@ def build_task_prompt(summary: PaperSummary, data_filename: str) -> str:
             blinded_lookup.setdefault(prefix_match.group(1), et)
 
     # Format table specs
-    if summary.tables:
+    if summary.tables and "table" in item_types:
         table_parts = []
         for t in summary.tables:
             matched_et = blinded_lookup.get(t.table_number)
@@ -348,7 +344,7 @@ def build_task_prompt(summary: PaperSummary, data_filename: str) -> str:
         table_specs = "No tables specified."
 
     # Format figure specs
-    if summary.figures:
+    if summary.figures and "figure" in item_types:
         fig_parts = []
         for f in summary.figures:
             fig_filename = f.figure_number.replace(" ", "_").lower() + ".png"
@@ -398,6 +394,29 @@ def build_task_prompt(summary: PaperSummary, data_filename: str) -> str:
     sample_size = f"**Sample Size**: {summary.sample_size}\n" if summary.sample_size else ""
     time_period = f"**Time Period**: {summary.time_period}\n" if summary.time_period else ""
 
+    # Build items section conditionally
+    items_parts = []
+    if "table" in item_types and table_specs != "No tables specified.":
+        items_parts.append(f"**Tables to Replicate**:\n{table_specs}")
+    if "figure" in item_types and figure_specs != "No figures specified.":
+        items_parts.append(f"**Figures to Replicate**:\n{figure_specs}")
+    items_section = "\n".join(items_parts) + "\n" if items_parts else ""
+
+    # Build conditional instruction blocks
+    table_instructions = ""
+    if "table" in item_types:
+        table_instructions = (
+            "\n   **Table output format**: Load the JSON template from `table_templates/`,\n"
+            "   run your regressions, and fill in each cell's fields:\n"
+            "   - `raw_text`: the formatted value as it would appear in the paper "
+            '(e.g. "0.523***", "(0.102)", "Yes")\n'
+            "   - `numeric_value`: the numeric value (float), or null if the cell is non-numeric\n"
+            "   Write the completed table as `.json` using the same schema.\n"
+        )
+    figure_instructions = ""
+    if "figure" in item_types:
+        figure_instructions = "   Figures: write as `.png`.\n"
+
     return TASK_TEMPLATE.format(
         data_filename=data_filename,
         title=summary.title or summary.paper_id,
@@ -409,8 +428,9 @@ def build_task_prompt(summary: PaperSummary, data_filename: str) -> str:
         sample_size=sample_size,
         time_period=time_period,
         processing_steps=steps,
-        table_specs=table_specs,
-        figure_specs=figure_specs,
+        items_section=items_section,
+        table_instructions=table_instructions,
+        figure_instructions=figure_instructions,
     )
 
 
@@ -425,6 +445,7 @@ def setup_workspace(
     paper: PaperSpec,
     paper_summary: PaperSummary,
     workspace_dir: Path,
+    item_types: list[str] | None = None,
 ) -> str:
     """Set up an isolated workspace with data, TASK.md, and methodology JSON.
 
@@ -435,10 +456,13 @@ def setup_workspace(
         paper: Paper specification (used only for data_path).
         paper_summary: Pre-extracted methodology summary (no results).
         workspace_dir: Directory to set up.
+        item_types: Item types to include ('table', 'figure', or both).
 
     Returns:
         The data_filename used in the task prompt.
     """
+    if item_types is None:
+        item_types = ["table", "figure"]
     workspace_dir.mkdir(parents=True, exist_ok=True)
 
     # Symlink data into workspace (avoids duplicating large datasets)
@@ -458,7 +482,7 @@ def setup_workspace(
         data_filename = data_src.name
 
     # Write task prompt with methodology summary
-    task_prompt = build_task_prompt(paper_summary, data_filename)
+    task_prompt = build_task_prompt(paper_summary, data_filename, item_types=item_types)
     (workspace_dir / "TASK.md").write_text(task_prompt)
 
     # Save the summary as JSON for reference
@@ -469,7 +493,7 @@ def setup_workspace(
     # Write blinded JSON templates so replicator code can json.load() them.
     # Filenames use the normalized table_number from the TableSpec (e.g. "table_1.json"),
     # matched to extracted tables via the same prefix lookup used in build_task_prompt().
-    if paper_summary.extracted_tables:
+    if paper_summary.extracted_tables and "table" in item_types:
         import re
         blinded_lookup: dict[str, "ExtractedTable"] = {}
         for et in paper_summary.extracted_tables:

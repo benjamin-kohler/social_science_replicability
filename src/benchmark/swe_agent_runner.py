@@ -44,8 +44,9 @@ class SweAgentRunner(BaseReplicationRunner):
         step_limit: int = 0,
         cost_limit: float = 3.0,
         allow_web_access: bool = False,
+        item_types: list[str] | None = None,
     ):
-        super().__init__(timeout=timeout, allow_web_access=allow_web_access)
+        super().__init__(timeout=timeout, allow_web_access=allow_web_access, item_types=item_types)
         self.step_limit = step_limit
         self.cost_limit = cost_limit
 
@@ -73,7 +74,7 @@ class SweAgentRunner(BaseReplicationRunner):
         if paper_direct:
             setup_workspace_paper_direct(paper, paper_summary, workspace_dir)
         else:
-            setup_workspace(paper, paper_summary, workspace_dir)
+            setup_workspace(paper, paper_summary, workspace_dir, item_types=self.item_types)
 
         if paper_direct:
             prompt_text = (

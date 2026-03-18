@@ -15,9 +15,11 @@ class BaseReplicationRunner(ABC):
     ``BenchmarkRunner`` can dispatch uniformly.
     """
 
-    def __init__(self, timeout: int = 600, allow_web_access: bool = False):
+    def __init__(self, timeout: int = 600, allow_web_access: bool = False,
+                 item_types: list[str] | None = None):
         self.timeout = timeout
         self.allow_web_access = allow_web_access
+        self.item_types = item_types or ["table", "figure"]
 
     @abstractmethod
     def run(

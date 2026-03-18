@@ -29,8 +29,9 @@ class OpencodeRunner(BaseReplicationRunner):
         opencode_binary: str = "opencode",
         timeout: int = 600,
         allow_web_access: bool = False,
+        item_types: list[str] | None = None,
     ):
-        super().__init__(timeout=timeout, allow_web_access=allow_web_access)
+        super().__init__(timeout=timeout, allow_web_access=allow_web_access, item_types=item_types)
         self.opencode_binary = opencode_binary
 
     def run(
@@ -57,7 +58,7 @@ class OpencodeRunner(BaseReplicationRunner):
         if paper_direct:
             setup_workspace_paper_direct(paper, paper_summary, workspace_dir)
         else:
-            setup_workspace(paper, paper_summary, workspace_dir)
+            setup_workspace(paper, paper_summary, workspace_dir, item_types=self.item_types)
 
         # Build the inline prompt — single sentence pointing to TASK.md.
         if paper_direct:

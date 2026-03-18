@@ -26,9 +26,11 @@ class SharedEvaluator:
         self,
         judge_config: JudgeConfig,
         api_keys: dict[str, str] | None = None,
+        item_types: list[str] | None = None,
     ):
         self.judge_config = judge_config
         self._api_keys = api_keys or {}
+        self._item_types = item_types or ["table", "figure"]
         self._comparator = self._build_comparator()
         self._judge = self._build_judge()
 
@@ -56,6 +58,7 @@ class SharedEvaluator:
             api_key=api_key,
             use_vision=self.judge_config.use_vision,
             comparator=self._comparator,
+            item_types=self._item_types,
         )
 
     def evaluate(

@@ -26,6 +26,7 @@ APPROACHES="${APPROACHES:-claude-code codex swe-agent opencode}"
 TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-7200}"
 PAPER_FILTER="${PAPERS:-}"
 PARALLEL="${PARALLEL:-5}"
+ITEM_TYPES="${ITEM_TYPES:-table figure}"
 
 # Model assignments
 MODEL_CLAUDE_CODE="claude-opus-4-6"
@@ -304,6 +305,7 @@ main() {
                 --approaches "$approach" \
                 --papers "$paper_slug" \
                 --timeout "$TIMEOUT_SECONDS" \
+                --item-types $ITEM_TYPES \
                 >> "$paper_log" 2>&1; then
                 local duration=$(( $(date +%s) - start_time ))
                 log "  DONE $paper_slug/$approach in ${duration}s"

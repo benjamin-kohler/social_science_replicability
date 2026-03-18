@@ -53,6 +53,12 @@ def main():
         default=None,
         help="Allow models to use web search (default: blocked for information isolation)",
     )
+    parser.add_argument(
+        "--item-types",
+        nargs="*",
+        choices=["table", "figure"],
+        help="Filter to specific item types (default: both table and figure)",
+    )
 
     args = parser.parse_args()
 
@@ -86,6 +92,8 @@ def main():
         config.timeout_seconds = args.timeout
     if args.allow_web_access is not None:
         config.allow_web_access = args.allow_web_access
+    if args.item_types:
+        config.item_types = args.item_types
 
     if not config.models:
         logger.error("No models selected. Check --models filter.")

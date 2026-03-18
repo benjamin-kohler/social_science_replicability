@@ -152,12 +152,14 @@ class Judge:
         api_key: str,
         use_vision: bool = True,
         comparator: ComparatorAgent | None = None,
+        item_types: list[str] | None = None,
     ):
         self.provider = provider.lower()
         self.model = model
         self.api_key = api_key
         self.use_vision = use_vision
         self._comparator = comparator
+        self.item_types = item_types or ["table", "figure"]
         self._client: Any = None
         self._usage: list[dict] = []  # per-call token usage log
         self._is_reasoning = any(model.startswith(p) for p in self._REASONING_PREFIXES)
@@ -465,8 +467,10 @@ class Judge:
         item_verifications: list[ItemVerification] = []
         discrepancy_analyses: list[DiscrepancyAnalysis] = []
 
-        # Judge tables (programmatic via comparator if paper_results available)
-        for gen_table in replication_results.tables:
+        # Judge tables (programmatic if paper_results available)
+        if "table" not in self.item_types:
+            logger.info("Skipping table evaluation (item_types filter)")
+        for gen_table in (replication_results.tables if "table" in self.item_types else []):
             spec = table_specs.get(gen_table.table_number)
             original_table = paper_results.get_table(gen_table.table_number) if paper_results else None
 
@@ -478,8 +482,10 @@ class Judge:
             if analysis:
                 discrepancy_analyses.append(analysis)
 
-        # Judge figures (LLM vision — unchanged)
-        for gen_figure in replication_results.figures:
+        # Judge figures (LLM vision)
+        if "figure" not in self.item_types:
+            logger.info("Skipping figure evaluation (item_types filter)")
+        for gen_figure in (replication_results.figures if "figure" in self.item_types else []):
             spec = figure_specs.get(gen_figure.figure_number)
 
             verification, analysis = self._judge_figure(
