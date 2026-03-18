@@ -20,25 +20,20 @@ logger = get_logger(__name__)
 
 # CLAUDE.md for the explainer workspace — allows reading everything provided.
 EXPLAINER_CLAUDE_MD = """\
-# Workspace Rules — READ CAREFULLY
+# Explainer Agent
 
-You are running a discrepancy explanation task. Your job is to investigate
-why an AI replicator's outputs differ from the original paper's results.
+You are investigating why an AI replicator's outputs differ from a paper's results.
+You have full access to all materials and may use any tools needed to diagnose issues.
 
-## File Access
-- You may ONLY read and write files inside this directory.
-- Do NOT read, list, or access any files outside this workspace.
-- Do NOT navigate to parent directories (`..`) or absolute paths outside this folder.
+Read TASK.md for your full instructions.
 
-## Internet Access
-- You may search for Python library documentation (statsmodels, pandas, etc.).
-- Do NOT search for this paper by title, authors, DOI, or any identifying information.
-- Do NOT search for the paper's results or any external replication attempts.
-
-## Task
-- Read TASK.md for your full instructions.
-- You have access to ALL materials: paper PDF, replication package, replicator code, etc.
-- Your output MUST include `explainer_report.json` in the exact schema specified in TASK.md.
+## Permissions
+- You may read and write any files inside this workspace.
+- You may execute Python and R code.
+- You may search the internet for library documentation, statistical methods,
+  and software behavior differences.
+- You may install packages if needed.
+- Your output MUST include `explainer_report.json` in the schema specified in TASK.md.
 """
 
 
@@ -46,82 +41,67 @@ EXPLAINER_TASK_TEMPLATE = """\
 # Discrepancy Explanation Task
 
 You are an expert research methods analyst. An AI replicator attempted to
-reproduce the empirical results of a research paper, and a judge graded each
-table/figure. Some items received grades below A, meaning discrepancies exist.
+reproduce the empirical results of a research paper. A deterministic judge
+graded each item, and some received grades below A. Your task is to investigate
+each discrepancy, diagnose its root cause, and categorize fault.
 
-Your task is to investigate each discrepancy, diagnose its root cause, and
-categorize who is at fault.
+## Pipeline Context
+
+The replication pipeline works as follows — understanding it helps identify
+where errors may have originated:
+
+1. **Extractor** (gpt-5-mini with vision): Reads the paper PDF and extracts a
+   structured methodology summary (`methodology_summary.json`). This includes
+   regression specifications, variable names, data processing steps, sample
+   restrictions, and table/figure structure. It does NOT include any results.
+
+2. **Results Extractor** (gpt-5-mini with vision): Reads the paper PDF again and
+   extracts the original cell values from each table into a structured JSON
+   (`original_table_values/`). These are then blinded (numeric values removed)
+   to create JSON templates for the replicator.
+
+3. **Replicator** (the AI agent being evaluated): Receives ONLY the methodology
+   summary, blinded table templates, and raw data files. It does NOT receive the
+   original paper PDF, original code, or any results. It writes Python scripts
+   and fills in the table templates with computed values.
+
+4. **Judge** (deterministic): Compares original extracted values against
+   replicated values cell-by-cell. {judge_description}
+
+Errors can originate at any stage:
+- **Extractor errors**: methodology summary is incomplete or wrong
+- **Results extractor errors**: original values read incorrectly from the PDF
+- **Replicator errors**: wrong specification, coding bugs, wrong variables
+- **Data issues**: missing variables, proprietary data, wrong data files
+- **Software differences**: Stata/R vs Python defaults (SEs, optimization, etc.)
 
 ## Materials Provided
 
 | Path | Contents |
 |------|----------|
 | `paper.pdf` | The original research paper |
-| `methodology_summary.json` | Methodology extracted by an AI extractor (what the replicator was given) |
+| `methodology_summary.json` | Methodology extracted by the extractor (what the replicator was given — no results) |
 | `replicator_code/` | Python/R scripts written by the AI replicator |
-| `replicator_outputs/` | CSV tables and PNG figures produced by the replicator |
+| `replicator_outputs/` | JSON tables and PNG figures produced by the replicator |
 | `replicator_log.txt` | The replicator's execution log |
-| `judge_results/verification_report.json` | Per-item grades and comparison notes from the judge |
-{explanation_report_row}{original_code_row}
+| `judge_results/verification_report.json` | Per-item grades and cell-by-cell comparisons |
+{original_values_row}{original_code_row}
 
 ## Items Requiring Explanation
-
-The following items received grades below A and need root cause analysis:
 
 {items_to_explain}
 
 ## Your Task
 
-For EACH item listed above, follow these steps:
+{task_instructions}
 
-1. **Read the paper** (`paper.pdf`): Find the relevant table/figure and understand
-   what the correct result should look like — coefficients, significance levels,
-   sample sizes, trends, etc.
+## You MAY Execute Code and Search the Internet
 
-2. **Read the methodology summary** (`methodology_summary.json`): Check what the
-   extractor told the replicator. Was the description complete? Were variable
-   definitions clear? Were sample restrictions specified? Were control variables
-   listed? Were fixed effects and clustering described?
-
-3. **Read the replicator's code** (`replicator_code/`): Trace through the logic.
-   What specification did the replicator actually implement? What variables did
-   it use? What sample restrictions did it apply?
-
-4. **Compare with the original code** (`original_code/`, if available): Identify
-   specific differences — different variable names, different sample filters,
-   different model specifications, different standard error computations, etc.
-
-5. **Read the replicator's log** (`replicator_log.txt`): Look for errors,
-   warnings, or decisions the replicator made that may explain the discrepancy.
-
-6. **Read the judge's notes** (`judge_results/`): Understand what the judge
-   flagged as different.
-
-7. **Diagnose the root cause**: Why does the replicator's output differ from
-   the paper? Be specific — cite file names, line numbers, variable names.
-
-8. **Categorize fault** — pick ONE primary category:
-   - `replicator`: The replicator made an error (wrong specification, coding bug,
-     misunderstanding of the methodology summary, wrong variables, etc.)
-   - `extractor`: The methodology summary was incomplete, misleading, or missing
-     critical information that the replicator needed (e.g., control variables
-     not listed, sample restrictions ambiguous, fixed effects not specified)
-   - `original_authors`: The original paper or replication package has an issue
-     (inconsistency between paper and code, undocumented data transformations, etc.)
-   - `data_limitation`: The discrepancy is due to data issues (missing variables,
-     different data version, insufficient observations, etc.)
-   - `software_differences`: The discrepancy stems from differences between
-     statistical software implementations (e.g., Stata vs Python, different
-     optimization algorithms, different default standard errors)
-
-## You MAY Execute Code
-
-You are allowed (and encouraged) to run Python code to test hypotheses about
-discrepancies. For example:
-- Load the replicator's output CSV and compare specific values
-- Re-run parts of the replicator's code with modifications
-- Check data filtering differences
-- Compute the percentage difference between expected and actual values
+You are allowed and encouraged to:
+- Run Python code to test hypotheses (load outputs, re-run regressions, check data)
+- Search the internet for library documentation, statistical method details,
+  and software behavior differences (e.g., "statsmodels vs Stata robust SE")
+- Install packages if needed
 
 ## Output — MANDATORY
 
@@ -145,7 +125,8 @@ Write this file with EXACTLY this JSON structure:
                 "original_approach": "Summary of what the original code does...",
                 "key_differences": ["difference 1", "difference 2"]
             }},
-            "fault_category": "extractor",
+            "primary_fault": "extractor",
+            "additional_faults": ["software_differences"],
             "fault_explanation": "The methodology summary did not specify...",
             "confidence": "high",
             "supporting_evidence": ["file.py line 42: uses X instead of Y", "..."],
@@ -159,7 +140,9 @@ Write this file with EXACTLY this JSON structure:
 
 Notes on the schema:
 - `code_comparison` may be `null` if no original replication package is available
-- `fault_category` must be one of: `replicator`, `extractor`, `original_authors`, `data_limitation`, `software_differences`
+- `primary_fault` must be one of: `replicator`, `extractor`, `results_extractor`,
+  `original_authors`, `data_limitation`, `software_differences`
+- `additional_faults` is a list of secondary contributing factors (same categories, may be empty)
 - `confidence` must be one of: `high`, `medium`, `low`
 - `supporting_evidence` should include specific file:line references
 - Include one entry in `analyses` for EVERY item listed above
@@ -171,12 +154,13 @@ A human-readable markdown report summarizing your findings. Include:
 - Detailed per-item sections with your analysis
 - An overall assessment section
 
-## Constraints
+## Approach
 
-- Only access files inside this workspace
-- Do NOT search the internet for this paper
-- Be thorough but concise — focus on actionable root causes
-- When in doubt between fault categories, explain the ambiguity in `fault_explanation`
+- Be thorough — trace through code line by line, compare variable names, check data
+- Be specific — cite file names, line numbers, variable names, exact values
+- When multiple faults contribute, list the primary one and additional ones
+- Remember the replicator never saw the paper or original code — it only had
+  the methodology summary and data
 """
 
 
@@ -280,21 +264,110 @@ def setup_explainer_workspace(
             has_original_code = copied > 0
             logger.info(f"Copied {copied} code files from replication package")
 
+    # --- Copy original extracted table values (for comparison) ---
+    has_original_values = False
+    run_dir = Path(replicator_workspace).parent
+    results_dir = run_dir.parent
+    results_json = results_dir / "summaries" / f"{paper_summary.paper_id}_results.json"
+    if not results_json.exists():
+        # Try flat layout (benchmark_cli)
+        results_json = results_dir / "summaries" / f"{paper_summary.paper_id}_results.json"
+    if results_json.exists():
+        orig_vals_dir = workspace_dir / "original_table_values"
+        orig_vals_dir.mkdir(exist_ok=True)
+        shutil.copy2(results_json, orig_vals_dir / "results.json")
+        has_original_values = True
+
+    # --- Determine item types present ---
+    table_items = [v for v in evaluation.verification_report.item_verifications
+                   if v.item_type == "table" and v.grade.value != "A"
+                   and not v.unverifiable and not v.judge_error]
+    figure_items = [v for v in evaluation.verification_report.item_verifications
+                    if v.item_type == "figure" and v.grade.value != "A"
+                    and not v.unverifiable and not v.judge_error]
+    has_tables = len(table_items) > 0
+    has_figures = len(figure_items) > 0
+
     # --- Build items-to-explain list ---
     items_lines = []
-    for v in evaluation.verification_report.item_verifications:
-        if v.grade.value == "A" or v.unverifiable or v.judge_error:
-            continue
+    for v in table_items + figure_items:
+        grade = v.grade.value
         notes_preview = v.comparison_notes[:200] if v.comparison_notes else ""
-        items_lines.append(
-            f"- **{v.item_id}** (Grade {v.grade.value}): {notes_preview}"
-        )
+        # For tables with cell comparisons, summarize
+        tc = v.table_comparison
+        if tc and tc.cell_comparisons:
+            from collections import Counter
+            cell_grades = Counter(c.grade for c in tc.cell_comparisons)
+            cell_summary = ", ".join(f"{g}:{n}" for g, n in sorted(cell_grades.items()))
+            items_lines.append(
+                f"- **{v.item_id}** (Grade {grade}, cells: {cell_summary})"
+            )
+        else:
+            items_lines.append(
+                f"- **{v.item_id}** (Grade {grade}): {notes_preview}"
+            )
     items_text = "\n".join(items_lines) if items_lines else "No items to explain (all grade A)."
 
+    # --- Build task instructions based on item types ---
+    task_parts = []
+    if has_tables:
+        task_parts.append("""\
+### For each table:
+
+1. **Load the original values** (`original_table_values/results.json`): Find the table
+   and examine the extracted cell values. These are what the judge compared against.
+
+2. **Load the replicated values** (`replicator_outputs/table_N.json`): These are
+   the values the replicator produced.
+
+3. **Identify non-A cells**: Cross-reference with `judge_results/verification_report.json`
+   to find which specific cells have large differences.
+
+4. **Trace through the replicator's code** (`replicator_code/table_N.py`): What
+   specification did it implement? What variables, sample restrictions, controls?
+
+5. **Read the methodology summary**: Was the description the replicator received
+   complete and accurate? Check variable definitions, sample restrictions, fixed
+   effects, clustering.
+
+6. **Compare with the original code** (`original_code/`, if available): Identify
+   specific differences — variable names, filters, model specs, SE computation.
+
+7. **Diagnose and categorize**: Why do specific cells differ? Cite file:line references.""")
+
+    if has_figures:
+        task_parts.append("""\
+### For each figure:
+
+1. **Compare visually**: Open the replicated figure (`replicator_outputs/figure_N.png`)
+   and compare with the original in `paper.pdf`.
+
+2. **Check the replicator's code** (`replicator_code/figure_N.py`): What data
+   transformations were applied? What plot parameters were used?
+
+3. **Compare with the original code** if available.
+
+4. **Diagnose**: Why do the plotted data patterns differ?""")
+
+    task_instructions = "\n\n".join(task_parts) if task_parts else "No items require explanation."
+
+    # --- Judge description based on item types ---
+    judge_parts = []
+    if has_tables:
+        judge_parts.append(
+            "Tables are graded deterministically: A (<2% diff), B (2-20%), "
+            "C (20-40%), D (40-60%), E (>60% or sign flip), F (missing)."
+        )
+    if has_figures:
+        judge_parts.append(
+            "Figures are graded by an LLM vision model comparing plotted data patterns."
+        )
+    judge_description = " ".join(judge_parts)
+
     # --- Build TASK.md ---
-    explanation_report_row = (
-        "| `judge_results/explanation_report.json` | Judge's discrepancy analysis |\n"
-        if evaluation.explanation_report
+    original_values_row = (
+        "| `original_table_values/` | Original cell values extracted from the paper PDF (what the judge compared against) |\n"
+        if has_original_values
         else ""
     )
     original_code_row = (
@@ -306,7 +379,9 @@ def setup_explainer_workspace(
     task_prompt = EXPLAINER_TASK_TEMPLATE.format(
         paper_id=paper_summary.paper_id,
         items_to_explain=items_text,
-        explanation_report_row=explanation_report_row,
+        task_instructions=task_instructions,
+        judge_description=judge_description,
+        original_values_row=original_values_row,
         original_code_row=original_code_row,
     )
     (workspace_dir / "TASK.md").write_text(task_prompt)
