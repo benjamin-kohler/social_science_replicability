@@ -92,16 +92,26 @@ get_model_for_approach() {
 
 get_provider_for_approach() {
     local approach="$1"
-    case "$approach" in
-        claude-code) echo "anthropic" ;;
-        *)           echo "openai" ;;
-    esac
+    local model
+    model=$(get_model_for_approach "$approach")
+    # Check if the model name contains a / (e.g. meta-llama/llama-3.3-70b)
+    # and the approach is swe-agent or opencode — these support openrouter
+    if [ -n "${OPENROUTER_PROVIDER:-}" ] && [[ "$approach" == "swe-agent" || "$approach" == "opencode" ]]; then
+        echo "openrouter"
+    elif [ "$approach" = "claude-code" ]; then
+        echo "anthropic"
+    else
+        echo "openai"
+    fi
 }
 
 get_api_key_env_for_approach() {
     local approach="$1"
-    case "$approach" in
-        claude-code) echo "ANTHROPIC_API_KEY" ;;
+    local provider
+    provider=$(get_provider_for_approach "$approach")
+    case "$provider" in
+        anthropic)   echo "ANTHROPIC_API_KEY" ;;
+        openrouter)  echo "OPENROUTER_API_KEY" ;;
         *)           echo "OPENAI_API_KEY" ;;
     esac
 }
@@ -120,6 +130,11 @@ generate_config() {
     model_name=$(get_model_for_approach "$approach")
     api_key_env=$(get_api_key_env_for_approach "$approach")
 
+    local api_base_url_line=""
+    if [ "$provider" = "openrouter" ]; then
+        api_base_url_line="    api_base_url: https://openrouter.ai/api/v1"
+    fi
+
     cat > "$config_file" <<YAML
 ## Auto-generated config: ${paper_slug} / ${approach}
 
@@ -127,6 +142,7 @@ models:
   - provider: ${provider}
     model_name: ${model_name}
     api_key_env: ${api_key_env}
+${api_base_url_line}
     approaches:
       - ${approach}
 

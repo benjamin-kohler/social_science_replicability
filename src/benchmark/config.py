@@ -9,9 +9,17 @@ from pydantic import BaseModel, Field
 class ModelSpec(BaseModel):
     """Specification for a model to benchmark."""
 
-    provider: str = Field(..., description="LLM provider: 'openai' or 'anthropic'")
-    model_name: str = Field(..., description="Model name (e.g., 'gpt-4o')")
+    provider: str = Field(
+        ...,
+        description="LLM provider: 'openai', 'anthropic', or 'openrouter'",
+    )
+    model_name: str = Field(..., description="Model name (e.g., 'gpt-4o', 'meta-llama/llama-3.3-70b')")
     api_key_env: str = Field(..., description="Environment variable name for the API key")
+    api_base_url: Optional[str] = Field(
+        default=None,
+        description="Custom API base URL (e.g., 'https://openrouter.ai/api/v1'). "
+        "If None, uses the provider's default endpoint.",
+    )
     approaches: Optional[list[str]] = Field(
         default=None,
         description="Restrict this model to specific approaches. None means all approaches.",

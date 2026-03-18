@@ -24,10 +24,14 @@ def _to_litellm_model(model: ModelSpec) -> str:
 
     litellm uses 'provider/model' for non-OpenAI providers.
     OpenAI models use just the model name.
+    OpenRouter models use 'openrouter/model_name' format.
     """
-    if model.provider.lower() == "openai":
+    provider = model.provider.lower()
+    if provider == "openai":
         return model.model_name
-    return f"{model.provider}/{model.model_name}"
+    if provider == "openrouter":
+        return f"openrouter/{model.model_name}"
+    return f"{provider}/{model.model_name}"
 
 
 class SweAgentRunner(BaseReplicationRunner):
@@ -99,6 +103,13 @@ class SweAgentRunner(BaseReplicationRunner):
             )
 
         litellm_model = _to_litellm_model(model)
+
+        # For OpenRouter, ensure the API key is set in the env for litellm
+        if model.provider.lower() == "openrouter":
+            api_key = os.environ.get(model.api_key_env, "")
+            if api_key:
+                os.environ["OPENROUTER_API_KEY"] = api_key
+
         web_status = "ALLOWED" if self.allow_web_access else "BLOCKED"
         logger.info(
             f"Running swe-agent: model={litellm_model}, "

@@ -34,6 +34,30 @@ class OpencodeRunner(BaseReplicationRunner):
         super().__init__(timeout=timeout, allow_web_access=allow_web_access, item_types=item_types)
         self.opencode_binary = opencode_binary
 
+    @staticmethod
+    def _write_openrouter_config(workspace_dir: Path, model: ModelSpec) -> None:
+        """Merge OpenRouter provider config into the workspace's opencode.json."""
+        config_path = Path(workspace_dir) / "opencode.json"
+        config = {}
+        if config_path.exists():
+            config = json_mod.loads(config_path.read_text())
+
+        config.setdefault("provider", {})
+        config["provider"]["openrouter"] = {
+            "npm": "@ai-sdk/openai-compatible",
+            "name": "OpenRouter",
+            "options": {
+                "baseURL": model.api_base_url or "https://openrouter.ai/api/v1",
+                "apiKey": f"{{env:{model.api_key_env}}}",
+            },
+            "models": {
+                model.model_name: {
+                    "name": model.model_name,
+                },
+            },
+        }
+        config_path.write_text(json_mod.dumps(config, indent=2))
+
     def run(
         self,
         model: ModelSpec,
@@ -73,9 +97,16 @@ class OpencodeRunner(BaseReplicationRunner):
         )
         start = time.time()
 
+        # Write OpenRouter provider config if needed
+        if model.provider.lower() == "openrouter":
+            self._write_openrouter_config(workspace_dir, model)
+
         try:
             # opencode CLI syntax: opencode run -m provider/model --dir workspace "message"
-            model_id = f"{model.provider}/{model.model_name}"
+            if model.provider.lower() == "openrouter":
+                model_id = f"openrouter/{model.model_name}"
+            else:
+                model_id = f"{model.provider}/{model.model_name}"
             abs_workspace = str(Path(workspace_dir).resolve())
             result = subprocess.run(
                 [
