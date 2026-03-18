@@ -70,6 +70,14 @@ class ArtifactParser:
                 replicated_et = None
                 if suffix == ".json" and isinstance(data, dict):
                     try:
+                        # Sanitize cells before parsing: coerce types that
+                        # LLMs sometimes get wrong (e.g. float significance_stars)
+                        for cell in data.get("cells", []):
+                            if "significance_stars" in cell:
+                                try:
+                                    cell["significance_stars"] = int(cell["significance_stars"])
+                                except (ValueError, TypeError):
+                                    cell["significance_stars"] = 0
                         et = ExtractedTable(**data)
                         if et.cells:
                             replicated_et = et

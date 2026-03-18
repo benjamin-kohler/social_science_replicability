@@ -269,7 +269,8 @@ class BenchmarkRunner:
     # -------------------------------------------------------------------------
 
     def _run_dir(self, model: ModelSpec, paper: PaperSpec, approach: str) -> Path:
-        return self.output_dir / f"{model.model_name}_{paper.paper_id}_{approach}"
+        safe_model = model.model_name.replace("/", "_")
+        return self.output_dir / f"{safe_model}_{paper.paper_id}_{approach}"
 
     @staticmethod
     def _has_existing_artifacts(workspace: Path) -> bool:

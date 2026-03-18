@@ -97,6 +97,7 @@ class ClaudeCodeRunner(BaseReplicationRunner):
             result = subprocess.run(
                 cmd,
                 cwd=abs_workspace,
+                stdin=subprocess.DEVNULL,
                 capture_output=True,
                 text=True,
                 timeout=self.timeout,
