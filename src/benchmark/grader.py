@@ -207,6 +207,32 @@ def grade_aligned_tables(
 
         logger.info(f"Matched {len(_orig_to_repl)} cells by column-position (fallback)")
 
+    # --- Strategy 3: refers_to fallback for still-unmatched SE/p-value cells ---
+    # If an original cell (e.g. SE with empty label) wasn't matched by strategies
+    # 1 or 2, try to match it via its refers_to chain: find the replicated cell
+    # that has the same (refers_to, col_index/column_label, row_type).
+    _unmatched_orig = [
+        c for c in original.cells
+        if not c.is_string and c.row_type != "panel_header" and id(c) not in _orig_to_repl
+    ]
+    if _unmatched_orig:
+        repl_by_ref = {}
+        for cell in replicated.cells:
+            if cell.refers_to is not None:
+                key = (cell.refers_to, cell.column_label, cell.row_type)
+                repl_by_ref.setdefault(key, []).append(cell)
+
+        n_ref_matched = 0
+        for cell in _unmatched_orig:
+            if cell.refers_to is not None:
+                key = (cell.refers_to, cell.column_label, cell.row_type)
+                candidates = repl_by_ref.get(key, [])
+                if candidates:
+                    _orig_to_repl[id(cell)] = candidates.pop(0)
+                    n_ref_matched += 1
+        if n_ref_matched:
+            logger.info(f"Matched {n_ref_matched} additional cells via refers_to")
+
     def _find_repl_cell(idx, orig_cell):
         """Find matching replicated cell."""
         return _orig_to_repl.get(id(orig_cell))

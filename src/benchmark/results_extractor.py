@@ -66,9 +66,28 @@ class CellValueResponse(BaseModel):
     )
     row_type: str = Field(
         default="coefficient",
-        description="One of: 'coefficient' (main estimate), 'se' (standard error row), "
-        "'statistic' (N, R-squared, F-stat, etc.), 'string' (text cell), "
+        description="Cell type. Must be one of: "
+        "'coefficient' (main estimate/point estimate), "
+        "'se' (standard error), "
+        "'p_value' (p-value), "
+        "'ci' (confidence interval bound), "
+        "'t_stat' (t-statistic or z-statistic), "
+        "'statistic_r2' (R-squared or adjusted R-squared), "
+        "'statistic_n_obs' (number of observations), "
+        "'statistic_f' (F-statistic or Wald test), "
+        "'statistic_other' (other summary statistic — specify in statistic_detail), "
+        "'string' (non-numeric text cell like Yes/No), "
         "'panel_header' (panel separator like 'Panel A: ...')",
+    )
+    statistic_detail: Optional[str] = Field(
+        default=None,
+        description="Further description when row_type='statistic_other', "
+        "e.g. 'adjusted R-squared', 'Wald chi2', 'mean of dep var', 'number of clusters'",
+    )
+    refers_to: Optional[int] = Field(
+        default=None,
+        description="row_index of the parent coefficient this cell relates to. "
+        "Set this for se, p_value, ci, and t_stat rows to link them to their coefficient.",
     )
 
 
@@ -101,20 +120,52 @@ RESULTS_EXTRACTOR_SYSTEM = """You are an expert at reading academic paper tables
 
 Your task: Given pages from a paper containing a specific table, extract EVERY cell value into a structured format.
 
-Rules:
-1. Copy the EXACT text from each cell (e.g., "-0.174***", "(0.052)", "Yes", "3,456").
+## Cell values
+
+1. Copy the EXACT text from each cell into raw_text (e.g., "-0.174***", "(0.052)", "Yes", "3,456").
 2. For numeric cells, also provide the parsed numeric_value:
-   - Strip significance stars before converting: "-0.174***" → numeric_value = -0.174
-   - Strip parentheses for standard errors: "(0.052)" → numeric_value = 0.052
+   - Strip significance stars: "-0.174***" → numeric_value = -0.174
+   - Strip parentheses for SEs: "(0.052)" → numeric_value = 0.052
    - Handle commas as thousands separators: "3,456" → numeric_value = 3456.0
    - Handle percentage signs: "50.2%" → numeric_value = 50.2
 3. Count significance stars accurately: * = 1, ** = 2, *** = 3.
-4. Mark standard error rows (in parentheses) with is_standard_error = true and row_type = "se".
-5. Mark summary statistics rows (N, R², Observations, F-statistic) with row_type = "statistic".
-6. Mark non-numeric cells (Yes/No, checkmarks, labels) with is_string = true and row_type = "string".
-7. Include ALL rows and ALL columns — do not skip any cells.
-8. If a cell is empty or contains a dash/dot placeholder, set raw_text to the placeholder and numeric_value to null.
-9. For the significance_convention, copy it from the table notes (e.g., "*** p<0.01, ** p<0.05, * p<0.1")."""
+4. If a cell is empty or contains a dash/dot placeholder, set raw_text to the placeholder and numeric_value to null.
+5. Include ALL rows and ALL columns — do not skip any cells.
+
+## Grid indices
+
+Assign row_index and col_index to every cell:
+- row_index: zero-based row position in the table (0 = first data row, counting every row including SE rows and panel headers)
+- col_index: zero-based column position (0 = first data column, not counting the row-label column)
+
+## Row types
+
+Classify each cell's row_type:
+- "coefficient": main estimate / point estimate
+- "se": standard error (typically in parentheses below the coefficient)
+- "p_value": p-value
+- "ci": confidence interval bound
+- "t_stat": t-statistic or z-statistic
+- "statistic_r2": R-squared or adjusted R-squared
+- "statistic_n_obs": number of observations (N, Observations)
+- "statistic_f": F-statistic or Wald test
+- "statistic_other": any other summary statistic (specify in statistic_detail)
+- "string": non-numeric text (Yes/No, checkmarks, fixed effects indicators)
+- "panel_header": panel separator (Panel A: ...)
+
+## Linking SEs, p-values, etc. to their coefficient
+
+For every cell with row_type = "se", "p_value", "ci", or "t_stat", set refers_to
+to the row_index of the coefficient it belongs to. This is critical when the SE row
+has an empty or generic label — refers_to makes the link explicit.
+
+Example: if "Treatment" is at row_index=2 and its SE "(0.05)" is at row_index=3,
+then the SE cell should have refers_to=2.
+
+## Significance convention
+
+Copy the significance convention from the table notes into significance_convention
+(e.g., "*** p<0.01, ** p<0.05, * p<0.1")."""
 
 
 RESULTS_EXTRACTOR_PROMPT = """Extract all values from {table_id} in this paper.
@@ -127,8 +178,13 @@ RESULTS_EXTRACTOR_PROMPT = """Extract all values from {table_id} in this paper.
 
 ## Paper pages containing this table are attached as images.
 
-Extract EVERY cell. Include coefficient rows, standard error rows, and summary statistic rows (N, R², etc.).
-For each cell, provide: raw_text (exact text from paper), numeric_value (parsed float), significance_stars, is_standard_error, row_type."""
+Extract EVERY cell. For each cell provide:
+- row_index, col_index (grid position)
+- raw_text (exact text from paper)
+- numeric_value (parsed float)
+- row_type (coefficient, se, p_value, ci, t_stat, statistic_r2, statistic_n_obs, statistic_f, statistic_other, string, panel_header)
+- refers_to (row_index of parent coefficient, for se/p_value/ci/t_stat rows)
+- significance_stars, is_standard_error"""
 
 
 RESULTS_EXTRACTOR_PROMPT_TEXT = """Extract all values from {table_id} in this paper.
@@ -142,8 +198,13 @@ RESULTS_EXTRACTOR_PROMPT_TEXT = """Extract all values from {table_id} in this pa
 ## Paper text (relevant pages):
 {paper_pages}
 
-Extract EVERY cell. Include coefficient rows, standard error rows, and summary statistic rows (N, R², etc.).
-For each cell, provide: raw_text (exact text from paper), numeric_value (parsed float), significance_stars, is_standard_error, row_type."""
+Extract EVERY cell. For each cell provide:
+- row_index, col_index (grid position)
+- raw_text (exact text from paper)
+- numeric_value (parsed float)
+- row_type (coefficient, se, p_value, ci, t_stat, statistic_r2, statistic_n_obs, statistic_f, statistic_other, string, panel_header)
+- refers_to (row_index of parent coefficient, for se/p_value/ci/t_stat rows)
+- significance_stars, is_standard_error"""
 
 
 # ---------------------------------------------------------------------------
@@ -304,6 +365,29 @@ class ResultsExtractor:
             result = self._call_structured(prompt)
 
         # Convert response to schema
+        # Normalize row_type: map old "statistic" to specific types if possible
+        _VALID_ROW_TYPES = {
+            "coefficient", "se", "p_value", "ci", "t_stat",
+            "statistic_r2", "statistic_n_obs", "statistic_f", "statistic_other",
+            "string", "panel_header",
+        }
+
+        def _normalize_row_type(c):
+            rt = c.row_type
+            if rt in _VALID_ROW_TYPES:
+                return rt
+            # Map legacy "statistic" to specific type based on label
+            rl = c.row_label.lower()
+            if "r2" in rl or "r^2" in rl or "r-squared" in rl or "r²" in rl:
+                return "statistic_r2"
+            if "obs" in rl or rl == "n" or rl == "n.":
+                return "statistic_n_obs"
+            if "f-stat" in rl or "f stat" in rl or "wald" in rl:
+                return "statistic_f"
+            if rt == "statistic":
+                return "statistic_other"
+            return rt if rt in _VALID_ROW_TYPES else "coefficient"
+
         cells = [
             CellValue(
                 row_label=c.row_label,
@@ -312,11 +396,13 @@ class ResultsExtractor:
                 col_index=c.col_index,
                 raw_text=c.raw_text,
                 numeric_value=c.numeric_value,
-                is_standard_error=c.is_standard_error,
+                is_standard_error=(c.row_type == "se" or c.is_standard_error),
                 significance_stars=c.significance_stars,
                 significance_level=c.significance_level,
                 is_string=c.is_string,
-                row_type=c.row_type,
+                row_type=_normalize_row_type(c),
+                statistic_detail=getattr(c, "statistic_detail", None),
+                refers_to=getattr(c, "refers_to", None),
             )
             for c in result.cells
         ]

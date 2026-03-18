@@ -6,9 +6,9 @@ including the LangGraph GraphState for workflow orchestration.
 
 import operator
 from enum import Enum
-from typing import Annotated, Any, Optional
+from typing import Annotated, Any, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from typing_extensions import TypedDict
 
 
@@ -258,6 +258,7 @@ class ReplicationResults(BaseModel):
 # =============================================================================
 
 
+
 class CellValue(BaseModel):
     """A single cell extracted from an original paper table."""
 
@@ -274,7 +275,9 @@ class CellValue(BaseModel):
         default=None, description="Parsed numeric value (None if non-numeric)"
     )
     is_standard_error: bool = Field(
-        default=False, description="True if this is a standard error in parentheses"
+        default=False,
+        description="True if this is a standard error in parentheses. "
+        "Deprecated: use row_type='se' instead. Kept for backward compatibility.",
     )
     significance_stars: int = Field(
         default=0, description="Number of significance stars (0, 1, 2, or 3)"
@@ -288,8 +291,38 @@ class CellValue(BaseModel):
     )
     row_type: str = Field(
         default="coefficient",
-        description="One of: coefficient, se, statistic, string, panel_header",
+        description="Cell type. Valid values: coefficient, se, p_value, ci, t_stat, "
+        "statistic_r2, statistic_n_obs, statistic_f, statistic_other, "
+        "string, panel_header",
     )
+    statistic_detail: Optional[str] = Field(
+        default=None,
+        description="Further description for statistic_other rows, "
+        "e.g. 'adjusted R-squared', 'Wald chi2', 'mean of dep var', 'number of clusters'",
+    )
+    refers_to: Optional[int] = Field(
+        default=None,
+        description="row_index of the parent coefficient this cell relates to "
+        "(for se, p_value, ci, t_stat rows)",
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_row_type(cls, data):
+        """Normalize legacy row_type values (e.g. 'statistic' → 'statistic_other')."""
+        if isinstance(data, dict):
+            rt = data.get("row_type", "coefficient")
+            if rt == "statistic":
+                rl = data.get("row_label", "").lower()
+                if "r2" in rl or "r^2" in rl or "r-squared" in rl or "r²" in rl:
+                    data["row_type"] = "statistic_r2"
+                elif "obs" in rl or rl in ("n", "n."):
+                    data["row_type"] = "statistic_n_obs"
+                elif "f-stat" in rl or "f stat" in rl or "wald" in rl:
+                    data["row_type"] = "statistic_f"
+                else:
+                    data["row_type"] = "statistic_other"
+        return data
 
 
 class ExtractedTable(BaseModel):
