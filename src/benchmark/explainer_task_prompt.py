@@ -74,6 +74,7 @@ Errors can originate at any stage:
 - **Extractor misinterpreted**: the paper describes something but the extractor conveyed it incorrectly
 - **Paper-code mismatch**: the paper describes one approach but the original authors' code implements something different
 - **Results extractor errors**: original values were read incorrectly from the PDF
+- **Results mismatched**: the deterministic cell matching between original and replicated tables failed — cells were compared against the wrong counterpart due to structural differences, label mismatches, or extra/missing rows
 - **Replicator errors**: wrong specification, coding bugs, wrong variables despite having sufficient information
 - **Data issues**: missing variables, proprietary data, wrong data files
 - **Software differences**: Stata/R vs Python defaults (SEs, optimization, etc.)
@@ -87,6 +88,7 @@ Errors can originate at any stage:
 | `replicator_code/` | Python/R scripts written by the AI replicator |
 | `replicator_outputs/` | JSON tables and PNG figures produced by the replicator |
 | `replicator_log.txt` | The replicator's execution log |
+| `replicator_trajectory.json` | Full agent conversation log (SWE-agent runs): messages, tool calls, outputs |
 | `judge_results/verification_report.json` | Per-item grades and cell-by-cell comparisons |
 {original_values_row}{original_code_row}
 
@@ -163,8 +165,10 @@ Notes on the schema:
   - `paper_underspecified`: paper does not provide enough methodological detail to replicate
   - `paper_code_mismatch`: paper describes one approach but original code implements another
   - `results_extractor`: original values read incorrectly from the PDF
+  - `results_mismatched`: the deterministic cell matching between original and replicated JSONs failed (wrong cell alignment, label mismatch, missing cells due to structural differences)
   - `data_limitation`: required data missing, proprietary, or insufficient
   - `software_differences`: Stata/R vs Python implementation differences
+  - `other`: issue does not fit any category above — explain in detail in fault_explanation
 - `additional_faults` is a list of secondary contributing factors (same categories, may be empty)
 - `confidence` must be one of: `high`, `medium`, `low`
 - `supporting_evidence` should include specific file:line references
@@ -254,6 +258,11 @@ def setup_explainer_workspace(
             if alt.exists():
                 shutil.copy2(alt, workspace_dir / f"replicator_log{alt.suffix}")
                 break
+
+    # --- Copy SWE-agent trajectory (most informative log for swe-agent runs) ---
+    trajectory_src = repl_ws / "trajectory.json"
+    if trajectory_src.exists():
+        shutil.copy2(trajectory_src, workspace_dir / "replicator_trajectory.json")
 
     # --- Save judge results ---
     judge_dir = workspace_dir / "judge_results"
