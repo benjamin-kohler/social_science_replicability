@@ -20,6 +20,10 @@ class ModelSpec(BaseModel):
         description="Custom API base URL (e.g., 'https://openrouter.ai/api/v1'). "
         "If None, uses the provider's default endpoint.",
     )
+    allow_web_access: Optional[bool] = Field(
+        default=None,
+        description="Allow web search for this model. If None, falls back to global config.",
+    )
     approaches: Optional[list[str]] = Field(
         default=None,
         description="Restrict this model to specific approaches. None means all approaches.",

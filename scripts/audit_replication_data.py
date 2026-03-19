@@ -41,8 +41,10 @@ log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 POSTCUTOFF_PAPERS = PROJECT_ROOT / "data" / "postcutoff" / "papers"
+PRECUTOFF_PAPERS = PROJECT_ROOT / "data" / "precutoff" / "papers"
 I4REP_PAPERS = PROJECT_ROOT / "data" / "i4replicate" / "papers"
 POSTCUTOFF_ZIPS = Path("/data/individual/benjamin/openicpsr_aea/post_cutoff_sample")
+PRECUTOFF_ZIPS = Path("/data/individual/benjamin/openicpsr_aea/pre_cutoff_sample")
 I4REP_ZIPS = PROJECT_ROOT / "data" / "i4replicate" / "replication_packages"
 
 OUTPUT_JSON = PROJECT_ROOT / "data" / "audit_replication_data.json"
@@ -165,6 +167,8 @@ def collect_zip_tree(paper_id: str, collection: str) -> str:
     """Get the file listing from the original ZIP (before data/code split)."""
     if collection == "postcutoff":
         zip_path = POSTCUTOFF_ZIPS / f"{paper_id}-V1.zip"
+    elif collection == "precutoff":
+        zip_path = PRECUTOFF_ZIPS / f"{paper_id}-V1.zip"
     else:
         zip_path = I4REP_ZIPS / f"{paper_id}.zip"
 
@@ -381,7 +385,7 @@ in with raw data? Is the raw data sufficient for replication?"""
 
 async def main():
     parser = argparse.ArgumentParser(description="Audit replication package data directories")
-    parser.add_argument("--only", choices=["postcutoff", "i4rep"], default=None,
+    parser.add_argument("--only", choices=["postcutoff", "precutoff", "i4rep"], default=None,
                         help="Only audit one collection")
     parser.add_argument("--papers", nargs="*", default=None,
                         help="Only audit specific paper IDs")
@@ -414,12 +418,17 @@ async def main():
     # Collect papers to audit
     papers: list[tuple[str, Path, str]] = []  # (paper_id, paper_dir, collection)
 
-    if args.only != "i4rep" and POSTCUTOFF_PAPERS.exists():
+    if args.only not in ("i4rep", "precutoff") and POSTCUTOFF_PAPERS.exists():
         for d in sorted(POSTCUTOFF_PAPERS.iterdir()):
             if d.is_dir():
                 papers.append((d.name, d, "postcutoff"))
 
-    if args.only != "postcutoff" and I4REP_PAPERS.exists():
+    if args.only not in ("postcutoff", "i4rep") and PRECUTOFF_PAPERS.exists():
+        for d in sorted(PRECUTOFF_PAPERS.iterdir()):
+            if d.is_dir():
+                papers.append((d.name, d, "precutoff"))
+
+    if args.only not in ("postcutoff", "precutoff") and I4REP_PAPERS.exists():
         for d in sorted(I4REP_PAPERS.iterdir()):
             if d.is_dir():
                 papers.append((d.name, d, "i4rep"))

@@ -380,6 +380,12 @@ class BenchmarkRunner:
         if runner is None:
             raise ValueError(f"Unknown approach: {base_approach}")
 
+        # Resolve per-model web access (model-level overrides global)
+        if model.allow_web_access is not None:
+            runner.allow_web_access = model.allow_web_access
+        else:
+            runner.allow_web_access = self.config.allow_web_access
+
         paper_summary = self._extract_summary(paper)
         return runner.run(
             model, paper, paper_summary, workspace,
