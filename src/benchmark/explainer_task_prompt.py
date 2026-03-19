@@ -69,9 +69,12 @@ where errors may have originated:
    replicated values cell-by-cell. {judge_description}
 
 Errors can originate at any stage:
-- **Extractor errors**: methodology summary is incomplete or wrong
-- **Results extractor errors**: original values read incorrectly from the PDF
-- **Replicator errors**: wrong specification, coding bugs, wrong variables
+- **Paper underspecified**: the paper itself does not describe the methodology in enough detail to replicate (ambiguous methods, missing variable definitions, unclear sample restrictions, unstated data transformations)
+- **Extractor missed**: the paper clearly describes something but the extractor failed to include it in the methodology summary
+- **Extractor misinterpreted**: the paper describes something but the extractor conveyed it incorrectly
+- **Paper-code mismatch**: the paper describes one approach but the original authors' code implements something different
+- **Results extractor errors**: original values were read incorrectly from the PDF
+- **Replicator errors**: wrong specification, coding bugs, wrong variables despite having sufficient information
 - **Data issues**: missing variables, proprietary data, wrong data files
 - **Software differences**: Stata/R vs Python defaults (SEs, optimization, etc.)
 
@@ -92,6 +95,19 @@ Errors can originate at any stage:
 {items_to_explain}
 
 ## Your Task
+
+### First: Read the original paper
+
+Before analyzing any specific item, read `paper.pdf` carefully. This is critical
+because you need to distinguish between:
+- Information that IS in the paper but was missed by the extractor
+- Information that is NOT in the paper (paper underspecified)
+- Information in the paper that contradicts the original code
+
+For each discrepancy, compare what the paper says against:
+1. What the methodology summary told the replicator
+2. What the original code actually implements (if available)
+3. What the replicator did
 
 {task_instructions}
 
@@ -125,9 +141,9 @@ Write this file with EXACTLY this JSON structure:
                 "original_approach": "Summary of what the original code does...",
                 "key_differences": ["difference 1", "difference 2"]
             }},
-            "primary_fault": "extractor",
+            "primary_fault": "extractor_missed",
             "additional_faults": ["software_differences"],
-            "fault_explanation": "The methodology summary did not specify...",
+            "fault_explanation": "The paper clearly describes X in Section 3.2, but the methodology summary omitted it...",
             "confidence": "high",
             "supporting_evidence": ["file.py line 42: uses X instead of Y", "..."],
             "suggested_fix": "The replicator should have..."
@@ -140,8 +156,15 @@ Write this file with EXACTLY this JSON structure:
 
 Notes on the schema:
 - `code_comparison` may be `null` if no original replication package is available
-- `primary_fault` must be one of: `replicator`, `extractor`, `results_extractor`,
-  `original_authors`, `data_limitation`, `software_differences`
+- `primary_fault` must be one of:
+  - `replicator`: coding bug or wrong specification despite sufficient information
+  - `extractor_missed`: paper clearly describes it but extractor omitted it from summary
+  - `extractor_misinterpreted`: paper describes it but extractor conveyed it incorrectly
+  - `paper_underspecified`: paper does not provide enough methodological detail to replicate
+  - `paper_code_mismatch`: paper describes one approach but original code implements another
+  - `results_extractor`: original values read incorrectly from the PDF
+  - `data_limitation`: required data missing, proprietary, or insufficient
+  - `software_differences`: Stata/R vs Python implementation differences
 - `additional_faults` is a list of secondary contributing factors (same categories, may be empty)
 - `confidence` must be one of: `high`, `medium`, `low`
 - `supporting_evidence` should include specific file:line references

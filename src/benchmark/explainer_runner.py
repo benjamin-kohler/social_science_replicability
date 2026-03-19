@@ -146,7 +146,8 @@ class ExplainerRunner:
             ]
             env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
             result = subprocess.run(
-                cmd, cwd=abs_workspace, capture_output=True, text=True,
+                cmd, cwd=abs_workspace, stdin=subprocess.DEVNULL,
+                capture_output=True, text=True,
                 timeout=self.timeout, env=env,
             )
             return result.stdout, result.stderr, result.returncode
@@ -172,7 +173,8 @@ class ExplainerRunner:
                 prompt_text,
             ]
             result = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=self.timeout,
+                cmd, stdin=subprocess.DEVNULL,
+                capture_output=True, text=True, timeout=self.timeout,
             )
             return result.stdout, result.stderr, result.returncode
         except subprocess.TimeoutExpired as exc:
