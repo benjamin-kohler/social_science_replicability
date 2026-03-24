@@ -149,21 +149,28 @@ def _infer_item_number(stem: str, default_prefix: str) -> str:
     """Infer an item number from a controlled filename stem.
 
     Filenames follow the convention: table_2.1, figure_3.1, table_a.1, etc.
+    Also handles Roman numeral filenames: table_i, table_ii, table_viii, etc.
     """
     stem_lower = stem.lower()
+    prefix = "Table" if "table" in stem_lower else "Figure"
 
     # Dotted or letter-prefixed numbering: table_2.1, table_a.1, figure_3.2
     dotted = re.search(
         r"(?:table|figure|fig)[_\-\s]?([a-z]?\d*\.?\d+)", stem_lower
     )
     if dotted:
-        prefix = "Table" if "table" in stem_lower else "Figure"
         return f"{prefix} {dotted.group(1).upper()}"
 
     # Plain number: table_1, figure_2
     plain = re.search(r"(?:table|figure|fig)[_\-\s]?(\d+)", stem_lower)
     if plain:
-        prefix = "Table" if "table" in stem_lower else "Figure"
         return f"{prefix} {plain.group(1)}"
+
+    # Roman numeral: table_i, table_ii, table_iv, table_viii, etc.
+    roman = re.search(
+        r"(?:table|figure|fig)[_\-\s]?((?:x{0,3})(?:ix|iv|v?i{0,3}))$", stem_lower
+    )
+    if roman and roman.group(1):  # non-empty match
+        return f"{prefix} {roman.group(1).upper()}"
 
     return f"{default_prefix} ({stem})"
