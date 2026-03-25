@@ -335,12 +335,11 @@ class ResultsExtractor:
         table_id = table_spec.table_number
         panel_info = f"- Panel structure: {table_spec.panel_structure}" if table_spec.panel_structure else ""
 
-        # Find relevant page images
-        item_page_images: list[dict] = []
-        if page_images:
-            from .pdf_page_utils import find_item_pages, select_page_images
-            page_nums = find_item_pages(paper_text, table_id)
-            item_page_images = select_page_images(page_images, page_nums)
+        # Send ALL page images — not just detected pages. Table detection by
+        # text search is unreliable (image-based tables, spanning pages, text
+        # extraction failures). Accuracy matters more than token cost since
+        # extraction runs once per paper.
+        item_page_images = page_images or []
 
         if item_page_images and self.use_vision:
             prompt = RESULTS_EXTRACTOR_PROMPT.format(

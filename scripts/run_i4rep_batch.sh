@@ -17,22 +17,21 @@ set -euo pipefail
 # Configuration — hardcoded to the correct project path on textlab
 # ---------------------------------------------------------------------------
 PROJECT_ROOT="/data/individual/benjamin/social_science_replicability"
-PAPERS_DIR="$PROJECT_ROOT/data/i4replicate/papers"
-RESULTS_DIR="$PROJECT_ROOT/data/i4replicate/results"
+PAPERS_DIR="${PAPERS_DIR:-$PROJECT_ROOT/data/i4replicate/papers}"
+RESULTS_DIR="${RESULTS_DIR:-$PROJECT_ROOT/data/i4replicate/results}"
 CONFIG_DIR="$PROJECT_ROOT/config"
-LOG_FILE="$PROJECT_ROOT/data/i4replicate/batch_run_$(date '+%Y%m%d_%H%M%S').log"
+LOG_FILE="${RESULTS_DIR}/batch_run_$(date '+%Y%m%d_%H%M%S').log"
 
-APPROACHES="${APPROACHES:-claude-code codex swe-agent opencode}"
 TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-7200}"
 PAPER_FILTER="${PAPERS:-}"
 PARALLEL="${PARALLEL:-5}"
-ITEM_TYPES="${ITEM_TYPES:-table figure}"
+ITEM_TYPES="${ITEM_TYPES:-table}"
 
-# Model assignments
-MODEL_CLAUDE_CODE="claude-opus-4-6"
-MODEL_CODEX="gpt-5.3-codex"
-MODEL_SWE_AGENT="gpt-5.2-codex"
-MODEL_OPENCODE="gpt-5.2-codex"
+# Run configurations: "approach:model:provider:api_key_env"
+# Each entry is one run per paper. Multiple entries for the same approach
+# with different models produce separate runs.
+DEFAULT_RUNS="claude-code:claude-opus-4-6:anthropic:ANTHROPIC_API_KEY codex:gpt-5.4:openai:OPENAI_API_KEY swe-agent:gpt-5.4:openai:OPENAI_API_KEY swe-agent:z-ai/glm-5:openrouter:OPENROUTER_API_KEY opencode:gpt-5.4:openai:OPENAI_API_KEY opencode:z-ai/glm-5:openrouter:OPENROUTER_API_KEY"
+RUNS="${RUNS:-$DEFAULT_RUNS}"
 
 JUDGE_MODEL="gpt-5-mini"
 EXTRACTOR_MODEL="gpt-5-mini"
@@ -79,41 +78,22 @@ log_separator() {
 # ---------------------------------------------------------------------------
 # Model lookup for each approach
 # ---------------------------------------------------------------------------
-get_model_for_approach() {
-    local approach="$1"
-    case "$approach" in
-        claude-code) echo "$MODEL_CLAUDE_CODE" ;;
-        codex)       echo "$MODEL_CODEX" ;;
-        swe-agent)   echo "$MODEL_SWE_AGENT" ;;
-        opencode)    echo "$MODEL_OPENCODE" ;;
-        *)           echo ""; return 1 ;;
-    esac
+# Parse a run spec "approach:model:provider:api_key_env" into variables
+parse_run_spec() {
+    local spec="$1"
+    RUN_APPROACH=$(echo "$spec" | cut -d: -f1)
+    RUN_MODEL=$(echo "$spec" | cut -d: -f2)
+    RUN_PROVIDER=$(echo "$spec" | cut -d: -f3)
+    RUN_API_KEY_ENV=$(echo "$spec" | cut -d: -f4)
 }
 
-get_provider_for_approach() {
-    local approach="$1"
-    local model
-    model=$(get_model_for_approach "$approach")
-    # Check if the model name contains a / (e.g. meta-llama/llama-3.3-70b)
-    # and the approach is swe-agent or opencode — these support openrouter
-    if [ -n "${OPENROUTER_PROVIDER:-}" ] && [[ "$approach" == "swe-agent" || "$approach" == "opencode" ]]; then
-        echo "openrouter"
-    elif [ "$approach" = "claude-code" ]; then
-        echo "anthropic"
-    else
-        echo "openai"
-    fi
-}
-
-get_api_key_env_for_approach() {
-    local approach="$1"
-    local provider
-    provider=$(get_provider_for_approach "$approach")
-    case "$provider" in
-        anthropic)   echo "ANTHROPIC_API_KEY" ;;
-        openrouter)  echo "OPENROUTER_API_KEY" ;;
-        *)           echo "OPENAI_API_KEY" ;;
-    esac
+# Build a unique run ID (used for directory names and deduplication)
+run_id() {
+    local spec="$1"
+    parse_run_spec "$spec"
+    local safe_model
+    safe_model=$(echo "$RUN_MODEL" | tr '/' '_')
+    echo "${safe_model}_${RUN_APPROACH}"
 }
 
 # ---------------------------------------------------------------------------
@@ -121,14 +101,16 @@ get_api_key_env_for_approach() {
 # ---------------------------------------------------------------------------
 generate_config() {
     local paper_slug="$1"
-    local approach="$2"
+    local run_spec="$2"
+    parse_run_spec "$run_spec"
+    local approach="$RUN_APPROACH"
+    local model_name="$RUN_MODEL"
+    local provider="$RUN_PROVIDER"
+    local api_key_env="$RUN_API_KEY_ENV"
     local paper_dir="$PAPERS_DIR/$paper_slug"
-    local config_file="$CONFIG_DIR/i4rep_${paper_slug}_${approach}.yaml"
-
-    local provider model_name api_key_env
-    provider=$(get_provider_for_approach "$approach")
-    model_name=$(get_model_for_approach "$approach")
-    api_key_env=$(get_api_key_env_for_approach "$approach")
+    local rid
+    rid=$(run_id "$run_spec")
+    local config_file="$CONFIG_DIR/i4rep_${paper_slug}_${rid}.yaml"
 
     local api_base_url_line=""
     if [ "$provider" = "openrouter" ]; then
@@ -136,13 +118,14 @@ generate_config() {
     fi
 
     cat > "$config_file" <<YAML
-## Auto-generated config: ${paper_slug} / ${approach}
+## Auto-generated config: ${paper_slug} / ${model_name} / ${approach}
 
 models:
   - provider: ${provider}
     model_name: ${model_name}
     api_key_env: ${api_key_env}
 ${api_base_url_line}
+    allow_web_access: false
     approaches:
       - ${approach}
 
@@ -168,16 +151,24 @@ extractor:
   use_vision: true
 
 run_explainer: true
-explainer_runner_type: claude-code
+explainer_runner_type: codex
 explainer_timeout_seconds: 900
 explainer_max_turns: 500
+
+explainer_model:
+  provider: openai
+  model_name: gpt-5.4
+  api_key_env: OPENAI_API_KEY
 
 output_dir: ${RESULTS_DIR}/${paper_slug}
 opencode_binary: $HOME/.opencode/bin/opencode
 claude_code_binary: claude
 codex_binary: codex
 timeout_seconds: ${TIMEOUT_SECONDS}
-allow_web_access: true
+allow_web_access: false
+
+item_types:
+  - table
 YAML
 
     echo "$config_file"
@@ -188,15 +179,13 @@ YAML
 # ---------------------------------------------------------------------------
 has_results() {
     local paper_slug="$1"
-    local approach="$2"
+    local run_spec="$2"
+    local rid
+    rid=$(run_id "$run_spec")
     local results_paper_dir="$RESULTS_DIR/$paper_slug"
 
-    if [ -d "$results_paper_dir" ]; then
-        local found
-        found=$(find "$results_paper_dir" -path "*${approach}*" -name "verification_report.json" 2>/dev/null | head -1)
-        if [ -n "$found" ]; then
-            return 0
-        fi
+    if [ -f "$results_paper_dir/${rid}/verification_report.json" ]; then
+        return 0
     fi
     return 1
 }
@@ -210,8 +199,11 @@ main() {
     log "  Project:    $PROJECT_ROOT"
     log "  Papers:     $PAPERS_DIR"
     log "  Results:    $RESULTS_DIR"
-    log "  Approaches: $APPROACHES"
-    log "  Models:     claude-code=$MODEL_CLAUDE_CODE codex=$MODEL_CODEX swe-agent=$MODEL_SWE_AGENT opencode=$MODEL_OPENCODE"
+    log "  Runs:       $(echo $RUNS | wc -w | tr -d ' ') configurations per paper"
+    for run_spec in $RUNS; do
+        parse_run_spec "$run_spec"
+        log "    $RUN_APPROACH ($RUN_MODEL via $RUN_PROVIDER)"
+    done
     log "  Judge:      $JUDGE_MODEL"
     log "  Extractor:  $EXTRACTOR_MODEL"
     log "  Timeout:    ${TIMEOUT_SECONDS}s"
@@ -257,7 +249,7 @@ main() {
         fi
 
         local data_count
-        data_count=$(find "$paper_dir/data" -type f 2>/dev/null | wc -l | tr -d ' ')
+        data_count=$(find "$paper_dir/data" \( -type f -o -type l \) 2>/dev/null | wc -l | tr -d ' ')
         if [ "$data_count" -eq 0 ]; then
             log "  SKIP $paper_slug: no data files"
             ((skipped_no_data++)) || true
@@ -268,11 +260,11 @@ main() {
     done
 
     local n_eligible=${#eligible_papers[@]}
-    local n_approaches
-    n_approaches=$(echo $APPROACHES | wc -w | tr -d ' ')
+    local n_runs_per_paper
+    n_runs_per_paper=$(echo $RUNS | wc -w | tr -d ' ')
     log ""
     log "Eligible: $n_eligible papers (skipped: $skipped_no_pdf no PDF, $skipped_no_data no data)"
-    log "Total runs planned: $((n_eligible * n_approaches)) ($n_eligible papers x $n_approaches approaches)"
+    log "Total runs planned: $((n_eligible * n_runs_per_paper)) ($n_eligible papers x $n_runs_per_paper runs)"
     log_separator
 
     if [ "$n_eligible" -eq 0 ]; then
@@ -299,22 +291,27 @@ main() {
         local paper_skipped=0
         local paper_failed=0
 
-        for approach in $APPROACHES; do
-            if has_results "$paper_slug" "$approach"; then
-                log "  SKIP $paper_slug/$approach: results exist"
+        for run_spec in $RUNS; do
+            local rid
+            rid=$(run_id "$run_spec")
+            parse_run_spec "$run_spec"
+            local approach="$RUN_APPROACH"
+
+            if has_results "$paper_slug" "$run_spec"; then
+                log "  SKIP $paper_slug/$rid: results exist"
                 ((paper_skipped++)) || true
                 continue
             fi
 
             local config_file
-            config_file=$(generate_config "$paper_slug" "$approach")
+            config_file=$(generate_config "$paper_slug" "$run_spec")
             if [ $? -ne 0 ]; then
-                log "  ERROR $paper_slug/$approach: config generation failed"
+                log "  ERROR $paper_slug/$rid: config generation failed"
                 ((paper_failed++)) || true
                 continue
             fi
 
-            log "  RUN  $paper_slug/$approach at $(date '+%H:%M:%S')..."
+            log "  RUN  $paper_slug/$rid at $(date '+%H:%M:%S')..."
 
             local start_time
             start_time=$(date +%s)
@@ -328,15 +325,15 @@ main() {
                 --item-types $ITEM_TYPES \
                 >> "$paper_log" 2>&1; then
                 local duration=$(( $(date +%s) - start_time ))
-                log "  DONE $paper_slug/$approach in ${duration}s"
+                log "  DONE $paper_slug/$rid in ${duration}s"
                 ((paper_completed++)) || true
             else
                 local exit_code=$?
                 local duration=$(( $(date +%s) - start_time ))
                 if [ $exit_code -eq 124 ]; then
-                    log "  TIMEOUT $paper_slug/$approach after ${duration}s"
+                    log "  TIMEOUT $paper_slug/$rid after ${duration}s"
                 else
-                    log "  FAILED $paper_slug/$approach (exit $exit_code) after ${duration}s"
+                    log "  FAILED $paper_slug/$rid (exit $exit_code) after ${duration}s"
                 fi
                 ((paper_failed++)) || true
             fi

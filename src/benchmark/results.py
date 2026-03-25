@@ -77,7 +77,8 @@ class ResultsAggregator:
     @staticmethod
     def save_run(run: SingleRunResult, output_dir: Path) -> None:
         """Save a single run result to JSON."""
-        run_dir = output_dir / f"{run.model.model_name}_{run.paper.paper_id}_{run.approach}"
+        safe_model = run.model.model_name.replace("/", "_")
+        run_dir = output_dir / f"{safe_model}_{run.paper.paper_id}_{run.approach}"
         run_dir.mkdir(parents=True, exist_ok=True)
         with open(run_dir / "result.json", "w") as f:
             json.dump(run.model_dump(), f, indent=2, default=str)

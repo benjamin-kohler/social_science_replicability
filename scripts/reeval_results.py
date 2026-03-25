@@ -37,11 +37,15 @@ def main():
     parser.add_argument("--collection", choices=["i4rep", "postcutoff", "all"], default="all")
     parser.add_argument("--papers", nargs="*", default=None)
     parser.add_argument("--judge-model", default="gpt-5-mini")
+    parser.add_argument("--item-types", nargs="*", default=None,
+                        help="Item types to evaluate (e.g. table figure). Default: all")
+    parser.add_argument("--deterministic-only", action="store_true",
+                        help="Skip LLM fallback — only use pre-aligned deterministic grading")
     args = parser.parse_args()
 
     project_root = Path(__file__).resolve().parent.parent
     api_key = os.environ.get("OPENAI_API_KEY", "")
-    if not api_key:
+    if not api_key and not args.deterministic_only:
         logger.error("OPENAI_API_KEY not set")
         return
 
@@ -53,6 +57,8 @@ def main():
     evaluator = SharedEvaluator(
         judge_config=judge_config,
         api_keys={"OPENAI_API_KEY": api_key},
+        item_types=args.item_types,
+        deterministic_only=args.deterministic_only,
     )
 
     # Find all result directories
@@ -80,21 +86,23 @@ def main():
             if args.papers and paper_id not in args.papers:
                 continue
 
-            # Find PDF
+            # Find PDF (not required in deterministic-only mode)
             pdf_path = papers_dir / paper_id / "paper.pdf"
-            if not pdf_path.exists():
+            if not pdf_path.exists() and not args.deterministic_only:
                 logger.warning(f"No PDF for {paper_id}, skipping")
                 continue
 
             paper = PaperSpec(
                 paper_id=paper_id,
-                pdf_path=str(pdf_path),
+                pdf_path=str(pdf_path) if pdf_path.exists() else "",
                 data_path=str(papers_dir / paper_id / "data"),
             )
 
             # Find all run directories (model_paper_approach)
             for run_dir in sorted(paper_dir.iterdir()):
                 if not run_dir.is_dir():
+                    continue
+                if run_dir.name in ("summaries", "z-ai") or "explainer" in run_dir.name:
                     continue
                 workspace = run_dir / "workspace"
                 if not workspace.exists():

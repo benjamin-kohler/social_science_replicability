@@ -204,11 +204,25 @@ simple — summary statistics, balance tables, and cross-tabulations must all be
 
 ## 2. What NOT to extract (results)
 
-Never include: regression coefficients, standard errors, t-statistics, p-values, significance
-stars, point estimates, confidence intervals, effect sizes, or descriptions of direction/magnitude.
+Never include any numeric values that a replicator should compute independently:
+- Regression coefficients, standard errors, t-statistics, p-values, significance stars
+- Point estimates, confidence intervals, effect sizes, mean/median/SD of outcome variables
+- Test statistics (F-stats, chi-squared, Wald stats) and their p-values
+- R-squared values, log-likelihood values, information criteria
+- Calibrated or estimated parameter values (even for structural/calibration tables — the
+  replicator must derive these from the data and model, not read them from your extraction)
+- Counts or percentages that are computed results (e.g., "N=1,234" as a regression output)
 
-DO include: table/figure structure (headers, labels, panels), design parameters (sample sizes,
-thresholds, variable names), and descriptive labels ("N", "R-squared", "Controls", "Yes"/"No").
+Also never include descriptions of result direction or magnitude (e.g., "positive and
+significant", "large negative effect", "coefficient of 0.42").
+
+DO include: table/figure structure (column headers, row labels, panel labels), design
+parameters that define the SPECIFICATION (variable names, model types, fixed effects,
+clustering), and structural labels ("Controls", "Yes"/"No", "FE", column model numbers).
+
+For row_names and column_names: use only the LABELS as they appear in the paper header/stub.
+Do NOT embed numeric results into row or column names. If a row label in the paper contains
+a result (e.g., "β = 0.33"), extract only the structural part (e.g., "β").
 
 ## 3. Data processing and cleaning steps
 
@@ -272,6 +286,7 @@ exactly as the authors did based solely on your extraction.
 ## 7. Table and figure precision
 
 - Copy EXACT column headers and row labels as printed. Count columns and rows precisely.
+  But STRIP any numeric results embedded in labels — only keep the structural label text.
 - Include panel structure (Panel A / Panel B) when present.
 - Copy full captions and table notes (excluding notes about specific coefficient values).
 - For figures: note approximate axis ranges, reference lines, and line style conventions.
@@ -290,21 +305,10 @@ EXTRACTION_USER_PROMPT = """Extract the methodology from this paper. Follow the 
 {paper_text}"""
 
 
-TEMPLATE_GENERATION_SYSTEM_PROMPT = """You are a structural template specialist for academic paper tables and figures.
+TEMPLATE_GENERATION_SYSTEM_PROMPT = """You are a structural template specialist for academic paper figures.
 
-Generate templates that faithfully reproduce the exact layout of tables and figures from a paper.
-
-## Table templates
-
-- EXACTLY the same number of columns and rows as the original table.
-- Use the EXACT column headers and row labels from the paper.
-- Cell content rules (check the ORIGINAL TABLE in the paper for each cell):
-  - **XXX**: computed result (coefficient, statistic, count, mean, etc.)
-  - **(XXX)**: standard error in parentheses
-  - **Empty**: leave blank if blank in the original (do NOT use --- or placeholders)
-  - **Literal text**: copy "Yes", "No", checkmarks, or labels as-is
-- Include panel headers (Panel A, Panel B) as spanning rows when present.
-- Include the full caption above the table.
+Generate figure code skeletons that faithfully reproduce the visual layout from a paper.
+Do NOT generate table templates — table structure is handled separately via JSON templates.
 
 ## Figure templates
 
@@ -320,23 +324,8 @@ Generate templates that faithfully reproduce the exact layout of tables and figu
 - The skeleton should be runnable (producing an empty styled plot) even without data."""
 
 
-TEMPLATE_GENERATION_USER_PROMPT = """Generate structural templates for each table and figure.
-Respond with valid JSON.
-
-Go back to the ORIGINAL TABLE in the paper text and reproduce its structure EXACTLY.
-
-Example regression table template (note how Variable C only appears in columns (3)-(4)):
-
-| | (1) | (2) | (3) | (4) |
-|---|---|---|---|---|
-| Variable A | XXX | XXX | XXX | XXX |
-| | (XXX) | (XXX) | (XXX) | (XXX) |
-| Variable B | XXX | XXX | XXX | XXX |
-| | (XXX) | (XXX) | (XXX) | (XXX) |
-| Variable C | | | XXX | XXX |
-| | | | (XXX) | (XXX) |
-| Controls | No | Yes | No | Yes |
-| Observations | XXX | XXX | XXX | XXX |
+TEMPLATE_GENERATION_USER_PROMPT = """Generate figure code skeletons.
+Respond with valid JSON. Do NOT generate table templates.
 
 Example figure skeleton:
 
@@ -687,19 +676,12 @@ class ExtractorAgent:
             )
 
             # Build lookup dicts from the list responses
-            table_tmpl_map = {t.table_number: t.template_markdown for t in result.table_templates}
+            # NOTE: table markdown templates removed — they leaked results via
+            # XXX placeholders that sometimes contained actual values. Table
+            # structure is now conveyed only via JSON blinded templates.
             figure_tmpl_map = {f.figure_number: f.template_code for f in result.figure_templates}
 
-            logger.info(f"Template keys: tables={list(table_tmpl_map.keys())}, "
-                        f"figures={list(figure_tmpl_map.keys())}")
-
-            for table_spec in summary.tables:
-                template = table_tmpl_map.get(table_spec.table_number)
-                if template:
-                    table_spec.template_markdown = template
-                    logger.info(f"Set template for {table_spec.table_number}")
-                else:
-                    logger.warning(f"No template found for {table_spec.table_number}")
+            logger.info(f"Template keys: figures={list(figure_tmpl_map.keys())}")
 
             for figure_spec in summary.figures:
                 template = figure_tmpl_map.get(figure_spec.figure_number)
@@ -713,7 +695,11 @@ class ExtractorAgent:
             logger.warning(f"Template generation failed (non-fatal): {e}")
 
     def _validate_no_results(self, summary: PaperSummary) -> None:
-        """Warn if the summary appears to contain actual results."""
+        """Warn if the summary appears to contain actual results.
+
+        Checks table specs (row_names, column_names, notes, description) for
+        numeric values that look like regression output or computed results.
+        """
         result_patterns = [
             r"\b\d+\.\d+\s*\*+",  # Numbers with significance stars
             r"p\s*[<>=]\s*0\.\d+",  # P-values
@@ -721,6 +707,7 @@ class ExtractorAgent:
             r"(increases?|decreases?)\s+by\s+\d+",  # Effect descriptions
         ]
 
+        # Check general text fields
         text_to_check = " ".join([
             summary.data_description,
             summary.data_context,
@@ -731,3 +718,23 @@ class ExtractorAgent:
         for pattern in result_patterns:
             if re.search(pattern, text_to_check, re.IGNORECASE):
                 logger.warning(f"Potential results leak detected: {pattern}")
+
+        # Check table specs for leaked numeric results
+        for t in summary.tables:
+            table_text = " ".join([
+                " ".join(t.row_names),
+                " ".join(t.column_names),
+                t.notes or "",
+                " ".join(
+                    step.description if hasattr(step, "description") else str(step)
+                    for step in (t.data_processing_steps or [])
+                ),
+            ])
+            # Count numbers with 2+ decimal places (likely computed results)
+            precise_numbers = re.findall(r"-?\d+\.\d{2,}", table_text)
+            if len(precise_numbers) > 5:
+                logger.warning(
+                    f"Results leak in {t.table_number}: {len(precise_numbers)} "
+                    f"precise numbers found in table spec (row/column names, notes). "
+                    f"Sample: {precise_numbers[:5]}"
+                )

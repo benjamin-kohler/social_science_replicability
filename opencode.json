@@ -14,6 +14,13 @@
             "context": 200000,
             "output": 131072
           }
+        },
+        "gpt-5.4": {
+          "name": "GPT 5.4",
+          "limit": {
+            "context": 100000,
+            "output": 131072
+          }
         }
       }
     }

@@ -305,11 +305,124 @@ def check_results(results_dir: Path) -> list[dict]:
             })
 
     # =========================================================================
-    # Check 13: Grading method distribution (pre-aligned vs LLM-only)
+    # Check 13: Non-numerical tables
+    # =========================================================================
+    non_numerical_tables = []
+    non_numerical_paper_set = set()
+    for pid in paper_ids:
+        rp = results_dir / pid / "summaries" / f"{pid}_results.json"
+        if not rp.is_file():
+            continue
+        r = _load_json(rp)
+        if not r:
+            continue
+        all_non_num = True
+        has_any_cells = False
+        for t in r.get("tables", []):
+            cells = t.get("cells", [])
+            if not cells:
+                continue
+            has_any_cells = True
+            n_numeric = sum(1 for c in cells if c.get("numeric_value") is not None and not c.get("is_string"))
+            if n_numeric == 0:
+                non_numerical_tables.append((pid, t["table_id"][:50], len(cells)))
+            else:
+                all_non_num = False
+        if all_non_num and has_any_cells:
+            non_numerical_paper_set.add(pid)
+
+    for pid, tid, n_cells in non_numerical_tables:
+        issues.append({
+            "paper_id": pid, "run_name": "(extractor)",
+            "issue": "non_numerical_table",
+            "details": f"{tid}: {n_cells} cells, all string/no numeric values",
+        })
+    for pid in non_numerical_paper_set:
+        issues.append({
+            "paper_id": pid, "run_name": "(paper)",
+            "issue": "all_tables_non_numerical",
+            "details": "all tables in this paper are non-numerical (text-only)",
+        })
+
+    # =========================================================================
+    # Check 14: Replicator loaded methodology summary (information leak check)
+    # =========================================================================
+    import re as _re
+    for pid, run_name, run_dir in all_runs:
+        ws = run_dir / "workspace"
+        if not ws.is_dir():
+            continue
+        flagged_files = []
+        for py_file in sorted(ws.glob("*.py")):
+            try:
+                code = py_file.read_text(errors="replace")
+            except Exception:
+                continue
+            # Check if the script references methodology_summary.json in any
+            # loading context: direct open(), assigned to a variable then opened,
+            # or read via Path. Exclude lines that only write *_summary.json.
+            has_ref = _re.search(r"""methodology_summary\.json""", code)
+            if not has_ref:
+                continue
+            # Exclude if the only reference is in a write context
+            lines_with_ref = [
+                line for line in code.splitlines()
+                if "methodology_summary" in line
+            ]
+            is_write_only = all(
+                _re.search(r"""open\s*\(.*["']w["']""", line) or
+                _re.search(r"""write_text|\.write\(""", line)
+                for line in lines_with_ref
+            )
+            if not is_write_only:
+                flagged_files.append(py_file.name)
+        if flagged_files:
+            issues.append({
+                "paper_id": pid, "run_name": run_name,
+                "issue": "reads_methodology_summary",
+                "details": f"{', '.join(flagged_files)} references methodology_summary.json (potential results leak)",
+            })
+
+    # =========================================================================
+    # Check 15: Missing per-table Python scripts
+    # =========================================================================
+    for pid, run_name, run_dir in all_runs:
+        ws = run_dir / "workspace"
+        if not ws.is_dir():
+            continue
+        # Find table JSONs produced (excluding templates)
+        table_jsons = sorted(
+            f.stem for f in ws.iterdir()
+            if f.name.startswith("table_") and f.suffix == ".json"
+        )
+        if not table_jsons:
+            continue
+        # Find Python scripts that look like per-table scripts
+        py_files = {f.stem for f in ws.iterdir() if f.suffix == ".py"}
+        # Count tables that have no matching .py file
+        tables_without_script = [t for t in table_jsons if t not in py_files]
+        if tables_without_script:
+            # Check if there's a single "do-everything" script instead
+            n_py = len(py_files)
+            issues.append({
+                "paper_id": pid, "run_name": run_name,
+                "issue": "tables_without_script",
+                "details": (
+                    f"{len(tables_without_script)}/{len(table_jsons)} table JSONs "
+                    f"have no matching .py file ({', '.join(tables_without_script[:5])})"
+                    f"{' ...' if len(tables_without_script) > 5 else ''}"
+                    f"; {n_py} total .py files in workspace"
+                ),
+            })
+
+    # =========================================================================
+    # Check 16: Grading method distribution (pre-aligned vs LLM-only)
     # =========================================================================
     grading_stats = {"pre_aligned": 0, "llm_only": 0, "no_items": 0}
     grading_by_approach = defaultdict(lambda: {"pre_aligned": 0, "llm_only": 0})
     llm_only_papers = defaultdict(int)  # paper_id -> count of LLM-only tables
+    pre_aligned_papers = defaultdict(int)  # paper_id -> count of pre-aligned tables
+    llm_only_details = []  # (pid, approach, model, item_id, grade)
 
     for pid, run_name, run_dir in all_runs:
         vr_path = run_dir / "verification_report.json"
@@ -327,33 +440,43 @@ def check_results(results_dir: Path) -> list[dict]:
         key = f"{model}/{approach}"
 
         for v in items:
+            # Skip figures and non-numerical tables from grading method stats
+            item_type = v.get("item_type", "")
+            if item_type == "figure":
+                grading_stats.setdefault("skipped_figures", 0)
+                grading_stats["skipped_figures"] += 1
+                continue
+            notes = v.get("comparison_notes", "")
+            if "non-numerical" in notes.lower():
+                grading_stats.setdefault("skipped_non_numerical", 0)
+                grading_stats["skipped_non_numerical"] += 1
+                continue
+
             tc = v.get("table_comparison")
             if tc and tc.get("cell_comparisons") and len(tc["cell_comparisons"]) > 0:
-                notes = tc.get("alignment_notes", "")
-                if "blinded" in notes or "row_index" in notes or "column-position" in notes:
-                    grading_stats["pre_aligned"] += 1
-                    grading_by_approach[key]["pre_aligned"] += 1
-                else:
-                    grading_stats["pre_aligned"] += 1  # other deterministic
-                    grading_by_approach[key]["pre_aligned"] += 1
+                grading_stats["pre_aligned"] += 1
+                grading_by_approach[key]["pre_aligned"] += 1
+                pre_aligned_papers[pid] += 1
             else:
                 grading_stats["llm_only"] += 1
                 grading_by_approach[key]["llm_only"] += 1
                 llm_only_papers[pid] += 1
+                llm_only_details.append((pid, approach, model, v.get("item_id", "?"), v.get("grade", "?")))
 
-    # Report papers where ALL tables used LLM-only (likely ID mismatch)
+    # Report papers where ALL tables used LLM-only (zero pre-aligned)
     for pid, count in sorted(llm_only_papers.items(), key=lambda x: -x[1]):
-        if count >= 3:  # at least 3 LLM-only tables across runs
+        if pre_aligned_papers.get(pid, 0) == 0 and count >= 3:
             issues.append({
                 "paper_id": pid, "run_name": "(grading)",
                 "issue": "all_llm_only",
-                "details": f"{count} table evaluations used LLM-only (possible table ID mismatch)",
+                "details": f"{count} table evaluations used LLM-only, 0 pre-aligned (possible table ID mismatch)",
             })
 
-    return issues, grading_stats, grading_by_approach
+    return issues, grading_stats, grading_by_approach, llm_only_details
 
 
-def print_summary(issues: list[dict], grading_stats=None, grading_by_approach=None):
+def print_summary(issues: list[dict], grading_stats=None, grading_by_approach=None,
+                   llm_only_details=None):
     """Print a summary of issues to console."""
     by_type = Counter(i["issue"] for i in issues)
     print("=" * 60)
@@ -381,18 +504,23 @@ def print_summary(issues: list[dict], grading_stats=None, grading_by_approach=No
         parts = [f"{k}={v}" for k, v in counts.most_common()]
         print(f"  {approach:<15s} {', '.join(parts)}")
 
-    # Grading method distribution
+    # Grading method distribution (numerical tables only — figures and non-numerical excluded)
     if grading_stats:
         total_graded = grading_stats["pre_aligned"] + grading_stats["llm_only"]
+        skipped_fig = grading_stats.get("skipped_figures", 0)
+        skipped_nn = grading_stats.get("skipped_non_numerical", 0)
         print()
-        print("Grading method distribution:")
-        print(f"  Pre-aligned (deterministic): {grading_stats['pre_aligned']:>5d} ({grading_stats['pre_aligned']/total_graded*100:.0f}%)" if total_graded else "")
-        print(f"  LLM-only (fallback):         {grading_stats['llm_only']:>5d} ({grading_stats['llm_only']/total_graded*100:.0f}%)" if total_graded else "")
+        print("Grading method distribution (numerical tables only):")
+        if total_graded:
+            print(f"  Pre-aligned (deterministic): {grading_stats['pre_aligned']:>5d} ({grading_stats['pre_aligned']/total_graded*100:.0f}%)")
+            print(f"  LLM-only (fallback):         {grading_stats['llm_only']:>5d} ({grading_stats['llm_only']/total_graded*100:.0f}%)")
+        print(f"  Skipped figures:             {skipped_fig:>5d}")
+        print(f"  Skipped non-numerical:       {skipped_nn:>5d}")
         print(f"  Runs with no items:          {grading_stats['no_items']:>5d}")
 
     if grading_by_approach:
         print()
-        print("Grading method by approach:")
+        print("Grading method by approach (numerical tables only):")
         print(f"  {'Approach':<35s} {'Pre-aligned':>12s} {'LLM-only':>10s} {'% Pre-aligned':>14s}")
         print(f"  {'-'*71}")
         for key in sorted(grading_by_approach, key=lambda k: -grading_by_approach[k]["pre_aligned"]):
@@ -400,6 +528,15 @@ def print_summary(issues: list[dict], grading_stats=None, grading_by_approach=No
             total = s["pre_aligned"] + s["llm_only"]
             pct = s["pre_aligned"] / total * 100 if total else 0
             print(f"  {key:<35s} {s['pre_aligned']:>12d} {s['llm_only']:>10d} {pct:>13.0f}%")
+
+    # LLM-only table details
+    if llm_only_details:
+        print()
+        print(f"LLM-only numerical tables ({len(llm_only_details)} items):")
+        print(f"  {'paper_id':<40s} {'approach':<14s} {'model':<26s} {'item_id':<20s} {'grade'}")
+        print(f"  {'-'*110}")
+        for pid, approach, model, item_id, grade in sorted(llm_only_details):
+            print(f"  {pid:<40s} {approach:<14s} {model:<26s} {item_id:<20s} {grade}")
 
 
 def write_csv(issues: list[dict], path: str):
@@ -427,8 +564,8 @@ def main():
         print(f"Results directory not found: {results_dir}")
         sys.exit(1)
 
-    issues, grading_stats, grading_by_approach = check_results(results_dir)
-    print_summary(issues, grading_stats, grading_by_approach)
+    issues, grading_stats, grading_by_approach, llm_only_details = check_results(results_dir)
+    print_summary(issues, grading_stats, grading_by_approach, llm_only_details)
 
     if args.csv:
         write_csv(issues, args.csv)

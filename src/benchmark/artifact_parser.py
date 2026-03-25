@@ -70,6 +70,8 @@ class ArtifactParser:
                 replicated_et = None
                 if suffix == ".json" and isinstance(data, dict):
                     try:
+                        # Normalize non-standard JSON formats into ExtractedTable format
+                        data = _normalize_table_json(data, table_number)
                         # Sanitize cells before parsing: coerce types that
                         # LLMs sometimes get wrong (e.g. float significance_stars)
                         for cell in data.get("cells", []):
@@ -118,6 +120,197 @@ class ArtifactParser:
             tables=tables,
             figures=figures,
         )
+
+
+def _normalize_table_json(data: dict, table_number: str) -> dict:
+    """Normalize non-standard replicator JSON formats into ExtractedTable format.
+
+    Handles formats like:
+      - {title, columns, rows: [{label, cells: [{raw_text, numeric_value}]}]}
+      - {table_id, results: {col: {row: val}}}
+      - {table_id, columns, rows: [{row_label, values: [...]}]}
+    Converts them to the standard {table_id, cells: [{row_label, column_label, ...}]} format.
+    """
+    # Already in standard format with cells
+    if "cells" in data and isinstance(data["cells"], list) and data["cells"]:
+        # Check first cell has row_label/column_label (not just nested row format)
+        first = data["cells"][0]
+        if isinstance(first, dict) and ("row_label" in first or "column_label" in first):
+            return data
+
+    # Ensure table_id is set
+    if "table_id" not in data or not data.get("table_id"):
+        data["table_id"] = data.get("title", data.get("table_number", table_number))
+
+    cells = []
+    columns = data.get("columns", data.get("column_labels", data.get("column_names", [])))
+    row_labels = data.get("row_labels", data.get("row_names", []))
+
+    # Format: {cells: [[{raw_text, numeric_value}, ...], ...]} (row-major grid of cell dicts)
+    if "cells" in data and isinstance(data["cells"], list) and data["cells"]:
+        first = data["cells"][0]
+        if isinstance(first, list):
+            for ri, row in enumerate(data["cells"]):
+                r_label = row_labels[ri] if ri < len(row_labels) else f"Row {ri}"
+                for ci, cell in enumerate(row):
+                    c_label = columns[ci] if ci < len(columns) else f"Col {ci}"
+                    if isinstance(cell, dict):
+                        cells.append({
+                            "row_label": str(r_label),
+                            "column_label": str(c_label),
+                            "row_index": ri,
+                            "col_index": ci,
+                            "raw_text": cell.get("raw_text", str(cell.get("numeric_value", ""))),
+                            "numeric_value": cell.get("numeric_value"),
+                        })
+                    elif cell is not None:
+                        try:
+                            nv = float(str(cell).replace(",", "").strip("*() "))
+                        except (ValueError, TypeError):
+                            nv = None
+                        cells.append({
+                            "row_label": str(r_label),
+                            "column_label": str(c_label),
+                            "row_index": ri,
+                            "col_index": ci,
+                            "raw_text": str(cell),
+                            "numeric_value": nv,
+                        })
+            if cells:
+                logger.info(f"Normalized row-major grid for {table_number}: {len(cells)} cells")
+                return {
+                    "table_id": data.get("table_id", table_number),
+                    "column_labels": [str(c) for c in columns] if columns else [],
+                    "cells": cells,
+                }
+
+    # Format: {rows: [{label, cells: [{raw_text, numeric_value}]}]}
+    # Only use rows if they contain data dicts (not just label strings)
+    rows_have_data = (
+        "rows" in data
+        and isinstance(data["rows"], list)
+        and data["rows"]
+        and isinstance(data["rows"][0], dict)
+    )
+    if rows_have_data:
+        for ri, row in enumerate(data["rows"]):
+            if not isinstance(row, dict):
+                continue
+            row_label = row.get("label", row.get("row_label", f"Row {ri}"))
+            row_cells = row.get("cells", row.get("values", []))
+            if isinstance(row_cells, list):
+                for ci, cell in enumerate(row_cells):
+                    col_label = columns[ci] if ci < len(columns) else f"Col {ci}"
+                    if isinstance(cell, dict):
+                        cells.append({
+                            "row_label": str(row_label),
+                            "column_label": str(col_label),
+                            "row_index": ri,
+                            "col_index": ci,
+                            "raw_text": cell.get("raw_text", str(cell.get("numeric_value", ""))),
+                            "numeric_value": cell.get("numeric_value"),
+                        })
+                    elif cell is not None:
+                        # Scalar value
+                        try:
+                            nv = float(str(cell).replace(",", "").strip("*() "))
+                        except (ValueError, TypeError):
+                            nv = None
+                        cells.append({
+                            "row_label": str(row_label),
+                            "column_label": str(col_label),
+                            "row_index": ri,
+                            "col_index": ci,
+                            "raw_text": str(cell),
+                            "numeric_value": nv,
+                        })
+
+    # Format: {results: [{outcome: ..., coef: ..., se: ...}, ...]} (list of row dicts)
+    elif "results" in data and isinstance(data["results"], list):
+        for ri, row in enumerate(data["results"]):
+            if not isinstance(row, dict):
+                continue
+            # Use first string-valued field as row label, rest as columns
+            row_label = None
+            for k, v in row.items():
+                if isinstance(v, str):
+                    row_label = v
+                    break
+            if row_label is None:
+                row_label = f"Row {ri}"
+            ci = 0
+            for k, v in row.items():
+                if isinstance(v, str) and v == row_label:
+                    continue  # skip the label field
+                try:
+                    nv = float(v) if v is not None else None
+                except (ValueError, TypeError):
+                    nv = None
+                if nv is not None:
+                    cells.append({
+                        "row_label": str(row_label),
+                        "column_label": str(k),
+                        "row_index": ri,
+                        "col_index": ci,
+                        "raw_text": str(v),
+                        "numeric_value": nv,
+                    })
+                    ci += 1
+
+    # Format: {results: {col_label: {row_label: value_or_dict}}} (nested dict)
+    elif "results" in data and isinstance(data["results"], dict):
+        ri_map = {}
+        for ci, (col_label, col_data) in enumerate(data["results"].items()):
+            if not isinstance(col_data, dict):
+                continue
+            for row_label, value in col_data.items():
+                # Flatten nested dicts: {coef: 0.5, se: 0.1} -> two cells
+                if isinstance(value, dict):
+                    for sub_key, sub_val in value.items():
+                        combined_label = f"{row_label}_{sub_key}"
+                        if combined_label not in ri_map:
+                            ri_map[combined_label] = len(ri_map)
+                        ri = ri_map[combined_label]
+                        try:
+                            nv = float(sub_val) if sub_val is not None else None
+                        except (ValueError, TypeError):
+                            nv = None
+                        if nv is not None:
+                            cells.append({
+                                "row_label": str(combined_label),
+                                "column_label": str(col_label),
+                                "row_index": ri,
+                                "col_index": ci,
+                                "raw_text": str(sub_val),
+                                "numeric_value": nv,
+                            })
+                else:
+                    if row_label not in ri_map:
+                        ri_map[row_label] = len(ri_map)
+                    ri = ri_map[row_label]
+                    try:
+                        nv = float(str(value).replace(",", "").strip("*() "))
+                    except (ValueError, TypeError):
+                        nv = None
+                    if nv is not None:
+                        cells.append({
+                            "row_label": str(row_label),
+                            "column_label": str(col_label),
+                            "row_index": ri,
+                            "col_index": ci,
+                            "raw_text": str(value),
+                            "numeric_value": nv,
+                        })
+
+    if cells:
+        logger.info(f"Normalized non-standard table JSON for {table_number}: {len(cells)} cells")
+        return {
+            "table_id": data.get("table_id", table_number),
+            "column_labels": [str(c) for c in columns] if columns else [],
+            "cells": cells,
+        }
+
+    return data
 
 
 def _is_table_file(stem: str) -> bool:

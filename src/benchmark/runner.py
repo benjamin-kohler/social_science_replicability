@@ -431,43 +431,25 @@ class BenchmarkRunner:
         # When results extraction succeeds, inject blinded table skeletons into
         # the summary so the replicator gets pre-aligned JSON templates.
         # If the results extractor returns fewer tables than the summary specifies,
-        # retry up to MAX_EXTRACTION_RETRIES times (clearing cache to force re-run).
-        MAX_EXTRACTION_RETRIES = 3
+        # If fewer tables are extracted than expected, proceed with partial results
+        # (do NOT retry and delete the cache — that causes repeated expensive extractions).
         for paper in self.config.papers:
             try:
                 summary = self._extract_summary(paper)
                 n_summary_tables = len(summary.tables)
 
                 try:
-                    paper_results = None
-                    for attempt in range(1, MAX_EXTRACTION_RETRIES + 1):
-                        paper_results = self._extract_results(paper, summary)
-                        n_extracted_with_cells = sum(
-                            1 for t in paper_results.tables if t.cells
+                    paper_results = self._extract_results(paper, summary)
+                    n_extracted_with_cells = sum(
+                        1 for t in paper_results.tables if t.cells
+                    )
+
+                    if n_extracted_with_cells < n_summary_tables:
+                        logger.warning(
+                            f"Results extraction for {paper.paper_id}: "
+                            f"{n_extracted_with_cells}/{n_summary_tables} tables "
+                            f"have cells. Proceeding with partial extraction."
                         )
-
-                        if n_extracted_with_cells >= n_summary_tables:
-                            break
-
-                        if attempt < MAX_EXTRACTION_RETRIES:
-                            logger.warning(
-                                f"Results extraction for {paper.paper_id}: "
-                                f"{n_extracted_with_cells}/{n_summary_tables} tables "
-                                f"have cells (attempt {attempt}/{MAX_EXTRACTION_RETRIES}). "
-                                f"Retrying..."
-                            )
-                            # Clear caches to force re-extraction
-                            self._results_cache.pop(paper.paper_id, None)
-                            results_path = self.output_dir / "summaries" / f"{paper.paper_id}_results.json"
-                            if results_path.exists():
-                                results_path.unlink()
-                        else:
-                            logger.warning(
-                                f"Results extraction for {paper.paper_id}: "
-                                f"{n_extracted_with_cells}/{n_summary_tables} tables "
-                                f"have cells after {MAX_EXTRACTION_RETRIES} attempts. "
-                                f"Proceeding with partial extraction."
-                            )
 
                     blinded = [t.to_blinded() for t in paper_results.tables if t.cells]
                     summary.extracted_tables = blinded

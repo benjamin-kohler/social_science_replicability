@@ -402,13 +402,22 @@ class ExtractedTable(BaseModel):
         """Return a copy with numeric values removed (blinded for the replicator).
 
         Keeps structural information: row/column labels, cell positions, row types.
-        String cells (is_string=True) are kept as-is since they're structural (Yes/No).
+        Purely structural string cells (Yes/No/checkmarks) are kept as-is.
+        String cells containing numeric content (CIs, ranges, percentages) are blanked.
         Numeric cells get numeric_value=None, raw_text="", significance cleared.
         """
         blinded_cells = []
         for cell in self.cells:
             if cell.is_string:
-                blinded_cells.append(cell.model_copy())
+                # Keep only purely structural strings (Yes/No/checkmarks/FE labels)
+                # Blank string cells with result-bearing row_types (CIs, coefficients, etc.)
+                result_row_types = {"ci", "p_value", "coefficient", "se", "t_stat"}
+                if cell.row_type in result_row_types:
+                    blinded_cells.append(cell.model_copy(update={
+                        "raw_text": "",
+                    }))
+                else:
+                    blinded_cells.append(cell.model_copy())
             else:
                 blinded_cells.append(cell.model_copy(update={
                     "numeric_value": None,
@@ -440,18 +449,42 @@ class PaperResults(BaseModel):
     def get_table(self, table_id: str) -> Optional["ExtractedTable"]:
         """Look up an extracted table by ID.
 
-        Tries exact match first, then prefix match (e.g. "Table 1" matches
-        "Table 1—Average Treatment Effects...").
+        Tries exact match first, then normalized prefix match (e.g. "Table 1" matches
+        "Table 1—Average Treatment Effects..." or "Table 2\\t6\\t6Effect...").
         """
+        import re
+
+        def _norm(s: str) -> str:
+            """Normalize table ID: strip tabs, collapse whitespace, strip captions."""
+            # Replace tabs and control chars with space
+            s = re.sub(r"[\t\r\n]+", " ", s)
+            # Collapse multiple spaces
+            s = re.sub(r" +", " ", s).strip()
+            return s
+
+        norm_query = _norm(table_id)
+        # Pass 1: exact match
         for t in self.tables:
             if t.table_id == table_id:
                 return t
-        # Prefix match: table_id might have caption appended
+        # Pass 2: exact match on normalized IDs
         for t in self.tables:
-            if t.table_id.startswith(table_id) and (
-                len(t.table_id) == len(table_id)
-                or t.table_id[len(table_id)] in "—–-:,"
+            if _norm(t.table_id) == norm_query:
+                return t
+        # Pass 3: prefix match — table_id might have caption appended
+        # "Table 2" matches "Table 2—Effect on..." or "Table 2. Results..."
+        sep_chars = "—–-:,.\t "
+        for t in self.tables:
+            nt = _norm(t.table_id)
+            if nt.startswith(norm_query) and (
+                len(nt) == len(norm_query)
+                or nt[len(norm_query)] in sep_chars
             ):
+                return t
+        # Pass 4: extract "Table N" prefix from stored ID and match
+        for t in self.tables:
+            m = re.match(r"((?:Table|Figure)\s+\w+)", _norm(t.table_id))
+            if m and m.group(1) == norm_query:
                 return t
         return None
 
@@ -707,6 +740,55 @@ class AgenticExplanationReport(BaseModel):
     )
     duration_seconds: float = Field(default=0.0, description="Wall-clock duration")
     usage: Optional[dict] = Field(default=None, description="Token usage summary")
+
+
+# =============================================================================
+# Leakage Detection
+# =============================================================================
+
+
+class LeakageFinding(BaseModel):
+    """A single leakage finding with evidence."""
+
+    vector: str = Field(
+        ...,
+        description="Leakage vector: 'summary_loading', 'summary_field_access', "
+        "'template_residual', 'hardcoded_value'",
+    )
+    file: str = Field(..., description="Filename where the leak was found")
+    line_number: Optional[int] = Field(default=None, description="Line number (1-indexed)")
+    code_snippet: str = Field(
+        ..., description="The offending code line or context (max ~200 chars)"
+    )
+    leaked_value: Optional[str] = Field(
+        default=None, description="The specific leaked numeric value"
+    )
+    source_field: Optional[str] = Field(
+        default=None,
+        description="Source field in methodology_summary or template "
+        "(e.g., 'extracted_tables.cells[3].numeric_value')",
+    )
+    confidence: str = Field(..., description="'high', 'medium', or 'low'")
+    explanation: str = Field(..., description="Why this is considered leakage")
+
+
+class LeakageScanResult(BaseModel):
+    """Leakage analysis result for one run."""
+
+    paper_id: str = Field(..., description="Paper identifier")
+    run_name: str = Field(..., description="Run directory name")
+    severity: str = Field(
+        ..., description="Overall severity: 'none', 'minor', 'moderate', 'severe'"
+    )
+    findings: list[LeakageFinding] = Field(default_factory=list)
+    affected_tables: list[str] = Field(
+        default_factory=list,
+        description="Table IDs whose output values are likely contaminated",
+    )
+    summary: str = Field(default="", description="Multi-paragraph analysis of the leakage pattern")
+    runner_model: str = Field(default="", description="Model that ran the analysis")
+    runner_type: str = Field(default="", description="'codex' or 'claude-code'")
+    duration_seconds: float = Field(default=0.0, description="Wall-clock duration")
 
 
 # =============================================================================

@@ -153,6 +153,7 @@ class Judge:
         use_vision: bool = True,
         comparator: ComparatorAgent | None = None,
         item_types: list[str] | None = None,
+        deterministic_only: bool = False,
     ):
         self.provider = provider.lower()
         self.model = model
@@ -160,6 +161,7 @@ class Judge:
         self.use_vision = use_vision
         self._comparator = comparator
         self.item_types = item_types or ["table", "figure"]
+        self.deterministic_only = deterministic_only
         self._client: Any = None
         self._usage: list[dict] = []  # per-call token usage log
         self._is_reasoning = any(model.startswith(p) for p in self._REASONING_PREFIXES)
@@ -449,16 +451,17 @@ class Judge:
         """
         logger.info(f"Judging replication for: {replication_results.paper_id}")
 
-        paper_text = extract_text_from_pdf(paper_path)
-
-        # Convert paper PDF to page images once (used for vision calls)
+        # Skip PDF loading in deterministic-only mode (no LLM calls needed)
+        paper_text = ""
         page_images: list[dict] = []
-        if self.use_vision:
-            try:
-                page_images = pdf_to_base64_images(paper_path, dpi=150)
-                logger.info(f"Converted paper to {len(page_images)} page images for vision judging")
-            except Exception as e:
-                logger.warning(f"Failed to convert paper to images, vision disabled: {e}")
+        if not self.deterministic_only:
+            paper_text = extract_text_from_pdf(paper_path)
+            if self.use_vision:
+                try:
+                    page_images = pdf_to_base64_images(paper_path, dpi=150)
+                    logger.info(f"Converted paper to {len(page_images)} page images for vision judging")
+                except Exception as e:
+                    logger.warning(f"Failed to convert paper to images, vision disabled: {e}")
 
         # Build lookups
         table_specs = {t.table_number: t for t in paper_summary.tables}
@@ -552,6 +555,23 @@ class Judge:
                 None,
             )
 
+        # --- Check for non-numerical tables (all string cells, no numeric values) ---
+        if original_table and original_table.cells:
+            n_numeric = sum(1 for c in original_table.cells
+                            if c.numeric_value is not None and not c.is_string)
+            if n_numeric == 0:
+                logger.info(f"Skipping {item_id}: non-numerical table (all cells are string/text)")
+                return (
+                    ItemVerification(
+                        item_id=item_id, item_type="table",
+                        grade=ReplicationGrade.A,
+                        comparison_notes=f"Non-numerical table ({len(original_table.cells)} text-only cells). "
+                        "Skipped from deterministic grading — structure match assumed.",
+                        unverifiable=True,
+                    ),
+                    None,
+                )
+
         # --- Pre-aligned JSON path (preferred) ---
         if (
             gen_table.replicated_extracted_table
@@ -563,6 +583,17 @@ class Judge:
             )
 
         # --- Fallback: LLM-only judging (no extracted results available) ---
+        if self.deterministic_only:
+            logger.info(f"Skipping {item_id}: no pre-aligned data (deterministic_only=True)")
+            return (
+                ItemVerification(
+                    item_id=item_id, item_type="table",
+                    grade=ReplicationGrade.F,
+                    comparison_notes="No pre-aligned data available. Skipped (deterministic-only mode).",
+                    unverifiable=True,
+                ),
+                None,
+            )
         logger.warning(f"No extracted original values for {item_id}, using LLM-only judging")
         return self._judge_table_llm_fallback(
             gen_table, spec, paper_text, page_images,

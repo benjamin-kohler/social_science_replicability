@@ -2,6 +2,7 @@
 
 import glob as glob_mod
 import json as json_mod
+import os
 import shutil
 import subprocess
 import time
@@ -84,15 +85,24 @@ class CodexRunner(BaseReplicationRunner):
                 "-C", abs_workspace,
                 "--skip-git-repo-check",
             ]
+            # Add the data directory so codex can follow the symlink
+            data_link = Path(workspace_dir) / "data"
+            if data_link.is_symlink():
+                data_target = str(data_link.resolve())
+                cmd.extend(["--add-dir", data_target])
             if not self.allow_web_access:
-                # Restrict sandbox: no full-disk read, no network access.
-                cmd.extend(["-c", "sandbox_permissions=[]"])
+                cmd.extend(["-c", "sandbox_permissions=[\"disk-full-read-access\"]"])
             cmd.append(prompt_text)
+            # Strip OPENAI_API_KEY so codex uses its ChatGPT subscription
+            # instead of consuming API tokens directly.
+            env = {k: v for k, v in os.environ.items() if k != "OPENAI_API_KEY"}
             result = subprocess.run(
                 cmd,
+                stdin=subprocess.DEVNULL,
                 capture_output=True,
                 text=True,
                 timeout=self.timeout,
+                env=env,
             )
             stdout = result.stdout
             stderr = result.stderr

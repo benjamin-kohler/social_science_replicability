@@ -28,7 +28,7 @@ class ClaudeCodeRunner(BaseReplicationRunner):
         self,
         claude_binary: str = "claude",
         timeout: int = 600,
-        max_turns: int = 50,
+        max_turns: int = 200,
         allow_web_access: bool = False,
         item_types: list[str] | None = None,
     ):

@@ -46,7 +46,7 @@ class SweAgentRunner(BaseReplicationRunner):
     def __init__(
         self,
         timeout: int = 600,
-        step_limit: int = 0,
+        step_limit: int = 100,
         cost_limit: float = 3.0,
         allow_web_access: bool = False,
         item_types: list[str] | None = None,
@@ -86,6 +86,7 @@ class SweAgentRunner(BaseReplicationRunner):
                 "Read TASK.md for your full instructions and constraints. "
                 "IMPORTANT: Only access files inside this workspace directory. "
                 "Do NOT search for the paper or its results online. "
+                "Exception: the data/ directory may be a symlink — use it freely as your dataset. "
                 "Read the paper PDF (paper.pdf) to understand the methodology, "
                 "then replicate all tables and figures using the provided data. "
                 "Write and execute each script ONE AT A TIME. "
@@ -97,7 +98,8 @@ class SweAgentRunner(BaseReplicationRunner):
                 "Read TASK.md for your full instructions and constraints. "
                 "IMPORTANT: Only access files inside this workspace directory. "
                 "Do NOT read files outside this directory or search for the paper or its results. "
-                "First explore the data files in this workspace to learn the actual "
+                "Exception: the data/ directory may be a symlink — use it freely as your dataset. "
+                "First explore the data files to learn the actual "
                 "column names. Then write Python scripts to replicate each table and figure. "
                 "You MUST execute the scripts with bash and fix any errors until they run "
                 "successfully. Use the exact output filenames specified in TASK.md for each item."

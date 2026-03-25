@@ -97,11 +97,16 @@ def fix_templates(results_dir: Path, dry_run: bool = False) -> int:
         import re
         templates = {}
         for et in extracted_tables:
-            prefix_match = re.match(r"((?:Table|Figure)\s+\S+)", et.get("table_id", ""))
+            table_id = et.get("table_id", "")
+            # Extract just "Table N" or "Table Na" (strip captions, periods, em-dashes)
+            prefix_match = re.match(r"((?:Table|Figure)\s+\w+)", table_id)
             if prefix_match:
-                fname = prefix_match.group(1).replace(" ", "_").lower() + ".json"
+                clean_name = prefix_match.group(1)
+                # Strip trailing periods/punctuation from the number part
+                clean_name = re.sub(r"[.\-—:,]+$", "", clean_name)
+                fname = clean_name.replace(" ", "_").lower() + ".json"
             else:
-                fname = et.get("table_id", "unknown").replace(" ", "_").lower() + ".json"
+                fname = table_id.replace(" ", "_").lower() + ".json"
             templates[fname] = et
 
         # Apply to all workspaces

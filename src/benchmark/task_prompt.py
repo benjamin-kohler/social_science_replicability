@@ -11,6 +11,7 @@ from .config import PaperSpec
 # this automatically) and AGENTS.md (other runners can read it explicitly).
 WORKSPACE_INSTRUCTIONS = """\
 Read TASK.md for your full instructions. Work only within this workspace.
+Exception: the data/ directory may be a symlink — use it freely as your dataset.
 """
 
 TASK_TEMPLATE = """# Replication Task
@@ -34,7 +35,7 @@ The dataset is located at: `{data_filename}`
 
 **Data Context**: {data_context}
 
-{data_source}{sample_size}{time_period}
+{data_source}{time_period}
 
 **Data Processing Steps**:
 {processing_steps}
@@ -46,6 +47,8 @@ You are in an isolated workspace for fair benchmarking.
 
 1. **Workspace only.** Only read and write files inside this workspace directory.
    Do not access files outside of it or navigate to parent directories.
+   **Exception:** the `data/` directory may be a symlink pointing outside the
+   workspace — this is intentional and you should use it freely as your dataset.
 
 2. **No searching for the paper.** Do not search the internet for this paper,
    its authors, its published results, or any replication code or packages.
@@ -120,6 +123,8 @@ You are in an isolated workspace for fair benchmarking.
 
 1. **Workspace only.** Only read and write files inside this workspace directory.
    Do not access files outside of it or navigate to parent directories.
+   **Exception:** the `data/` directory may be a symlink pointing outside the
+   workspace — this is intentional and you should use it freely as your dataset.
 
 2. **No searching for replication code.** Do not search the internet for
    replication code, replication packages, or prior replication attempts
@@ -336,8 +341,6 @@ def build_task_prompt(
                     part += "\n"
             if t.notes:
                 part += f"- Notes: {t.notes}\n"
-            if not matched_et and t.template_markdown:
-                part += f"\n**Structural template** (your output MUST match this structure — replace XXX with computed values, leave empty cells empty):\n\n{t.template_markdown}\n"
             table_parts.append(part)
         table_specs = "\n".join(table_parts)
     else:
@@ -391,7 +394,6 @@ def build_task_prompt(
 
     # Optional fields
     data_source = f"**Data Source**: {summary.data_source}\n" if summary.data_source else ""
-    sample_size = f"**Sample Size**: {summary.sample_size}\n" if summary.sample_size else ""
     time_period = f"**Time Period**: {summary.time_period}\n" if summary.time_period else ""
 
     # Build items section conditionally
@@ -425,7 +427,6 @@ def build_task_prompt(
         data_description=summary.data_description,
         data_context=summary.data_context,
         data_source=data_source,
-        sample_size=sample_size,
         time_period=time_period,
         processing_steps=steps,
         items_section=items_section,
