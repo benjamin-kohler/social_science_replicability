@@ -316,6 +316,74 @@ def _load_extracted_table_row_types(run_dir: Path) -> dict[tuple[str, str, str],
     return lookup
 
 
+def _load_replicator_se_values(run_dir: Path) -> dict[tuple[str, str, str], float | None]:
+    """Build lookup (table_id, coeff_row_label, column_label) -> replicated SE value."""
+    se_lookup = {}
+    for base in [run_dir / "explainer_workspace" / "replicator_outputs",
+                 run_dir / "workspace"]:
+        if not base.exists():
+            continue
+        for table_json in sorted(base.glob("table_*.json")):
+            data = _load_json(table_json)
+            if not data or "cells" not in data:
+                continue
+            table_id = data.get("table_id", "")
+            cells = data["cells"]
+            if cells and isinstance(cells[0], list):
+                cells = [c for row in cells for c in row if isinstance(c, dict)]
+            by_col: dict[str, list[dict]] = {}
+            for c in cells:
+                if not isinstance(c, dict):
+                    continue
+                col = c.get("column_label", "")
+                by_col.setdefault(col, []).append(c)
+            for col, col_cells in by_col.items():
+                for i, c in enumerate(col_cells):
+                    if c.get("row_type") == "coefficient" and i + 1 < len(col_cells):
+                        next_c = col_cells[i + 1]
+                        if next_c.get("row_type") == "se" or next_c.get("is_standard_error"):
+                            se_val = next_c.get("numeric_value")
+                            coeff_row_label = c.get("row_label", "")
+                            se_lookup[(table_id, coeff_row_label, col)] = se_val
+        break
+    return se_lookup
+
+
+def _load_original_se_values(run_dir: Path) -> dict[tuple[str, str, str], float | None]:
+    """Build lookup (table_id, coeff_row_label, column_label) -> original SE value."""
+    se_lookup = {}
+    for ms_path in [
+        run_dir / "explainer_workspace" / "methodology_summary.json",
+        run_dir / "workspace" / "methodology_summary.json",
+    ]:
+        if not ms_path.exists():
+            continue
+        ms = _load_json(ms_path)
+        if not ms:
+            continue
+        for table in ms.get("extracted_tables", []):
+            table_id = table.get("table_id", "")
+            cells = table.get("cells", [])
+            if cells and isinstance(cells[0], list):
+                cells = [c for row in cells for c in row if isinstance(c, dict)]
+            by_col: dict[str, list[dict]] = {}
+            for c in cells:
+                if not isinstance(c, dict):
+                    continue
+                col = c.get("column_label", "")
+                by_col.setdefault(col, []).append(c)
+            for col, col_cells in by_col.items():
+                for i, c in enumerate(col_cells):
+                    if c.get("row_type") == "coefficient" and i + 1 < len(col_cells):
+                        next_c = col_cells[i + 1]
+                        if next_c.get("row_type") == "se" or next_c.get("is_standard_error"):
+                            se_val = next_c.get("numeric_value")
+                            coeff_row_label = c.get("row_label", "")
+                            se_lookup[(table_id, coeff_row_label, col)] = se_val
+        break
+    return se_lookup
+
+
 def _load_original_significance(results_dir: Path, paper_slug: str) -> dict[tuple[str, str, str], int]:
     lookup = {}
     summaries_dir = results_dir / paper_slug / "summaries"
@@ -405,8 +473,10 @@ def load_results(results_dir: Path, papers_dir: Path | None = None) -> tuple[pd.
             workspace = run_dir / "workspace"
             meth_summary = _load_json(workspace / "methodology_summary.json")
 
-            # Load row_type and significance lookups for cell enrichment
+            # Load row_type, SE, and significance lookups for cell enrichment
             row_type_lookup = _load_extracted_table_row_types(run_dir)
+            replicator_se_lookup = _load_replicator_se_values(run_dir)
+            original_se_lookup = _load_original_se_values(run_dir)
             orig_sig_lookup = _load_original_significance(results_dir, paper_slug)
             repl_sig_lookup = _load_replicator_significance(run_dir)
 
@@ -480,11 +550,15 @@ def load_results(results_dir: Path, papers_dir: Path | None = None) -> tuple[pd.
                         rt_key = (item_id, cell_row_label, cell_col_label)
                         row_type = row_type_lookup.get(rt_key, "")
 
-                        # Significance for coefficient cells
+                        # SE values and significance for coefficient cells
+                        orig_se = None
+                        repl_se = None
                         sig_stars_orig = None
                         sig_stars_repl = None
                         if row_type == "coefficient":
                             se_key = (item_id, cell_row_label, cell_col_label)
+                            orig_se = original_se_lookup.get(se_key)
+                            repl_se = replicator_se_lookup.get(se_key)
                             sig_stars_orig = orig_sig_lookup.get(se_key)
                             sig_stars_repl = repl_sig_lookup.get(se_key)
 
@@ -504,6 +578,8 @@ def load_results(results_dir: Path, papers_dir: Path | None = None) -> tuple[pd.
                             "cell_grade": cell.get("grade", ""),
                             "is_numeric": is_numeric,
                             "row_type": row_type,
+                            "original_se": orig_se,
+                            "replicated_se": repl_se,
                             "significance_stars_orig": sig_stars_orig,
                             "significance_stars_repl": sig_stars_repl,
                         })
@@ -1210,29 +1286,20 @@ def plot_coefficient_se_scaled(df_cells: pd.DataFrame, output_dir: Path, subdir:
         return
 
     df["abs_diff"] = (df["original_value"].astype(float) - df["replicated_value"].astype(float)).abs()
-    # Use percent_difference as proxy for SE-scaled when SE not available
-    # For now just use abs_diff / original as approximation
-    # Check if we have actual SE data
-    has_se = False
-    if "original_se" in df.columns:
-        df["se"] = df["original_se"]
-        if "replicated_se" in df.columns:
-            mask_no_orig = df["se"].isna()
-            df.loc[mask_no_orig, "se"] = df.loc[mask_no_orig, "replicated_se"]
-        df_se = df[df["se"].notna() & (df["se"].astype(float) > 0)].copy()
-        if not df_se.empty:
-            has_se = True
-            df = df_se
-            df["diff_over_se"] = df["abs_diff"] / df["se"].astype(float)
-            df["diff_over_se_capped"] = df["diff_over_se"].clip(upper=10)
 
-    if not has_se:
-        # Fallback: use percent_difference
-        df = df[df["percent_difference"].notna()].copy()
-        if df.empty:
-            return
-        df["diff_over_se"] = df["percent_difference"]
-        df["diff_over_se_capped"] = df["percent_difference"].clip(upper=200)
+    # Use original SE if available, fall back to replicated SE
+    df["se"] = df["original_se"]
+    mask_no_orig = df["se"].isna()
+    df.loc[mask_no_orig, "se"] = df.loc[mask_no_orig, "replicated_se"]
+
+    # Filter to rows with valid SE > 0
+    df = df[df["se"].notna() & (df["se"].astype(float) > 0)].copy()
+    if df.empty:
+        print("  Skipping coefficient_se_scaled: no coefficients with SE data")
+        return
+
+    df["diff_over_se"] = df["abs_diff"] / df["se"].astype(float)
+    df["diff_over_se_capped"] = df["diff_over_se"].clip(upper=10)
 
     approaches = _approaches_in(df)
     fig, axes = plt.subplots(1, 2, figsize=(14, 6))
