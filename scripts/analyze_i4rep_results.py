@@ -29,20 +29,47 @@ GRADE_ORDER = ["A", "B", "C", "D", "E", "F"]
 GRADE_TO_NUM = {"A": 5, "B": 4, "C": 3, "D": 2, "E": 1, "F": 0}
 NUM_TO_GRADE = {v: k for k, v in GRADE_TO_NUM.items()}
 
-APPROACH_ORDER = ["claude-code", "codex", "swe-agent", "opencode"]
-APPROACH_LABELS = {
-    "claude-code": "Claude Code",
-    "codex": "Codex CLI",
-    "swe-agent": "SWE-Agent",
-    "opencode": "OpenCode",
+APPROACH_ORDER_RAW = ["claude-code", "codex", "swe-agent", "opencode"]
+
+# Approach × model combo keys (used as the primary grouping throughout).
+APPROACH_MODEL_ORDER = [
+    "claude-code/claude-opus-4-6",
+    "codex/gpt-5.3-codex",
+    "codex/gpt-5.4",
+    "swe-agent/gpt-5.4",
+    "swe-agent/z-ai_glm-5",
+    "opencode/gpt-5.4",
+    "opencode/z-ai_glm-5",
+]
+
+APPROACH_MODEL_LABELS = {
+    "claude-code/claude-opus-4-6": "Claude Code\nOpus 4.6",
+    "codex/gpt-5.4": "Codex CLI\nGPT-5.4",
+    "codex/gpt-5.3-codex": "Codex CLI\nGPT-5.3",
+    "swe-agent/gpt-5.4": "SWE-Agent\nGPT-5.4",
+    "swe-agent/gpt-5.2-codex": "SWE-Agent\nGPT-5.2",
+    "swe-agent/z-ai_glm-5": "SWE-Agent\nGLM-5",
+    "opencode/gpt-5.4": "OpenCode\nGPT-5.4",
+    "opencode/gpt-5.2-codex": "OpenCode\nGPT-5.2",
+    "opencode/z-ai_glm-5": "OpenCode\nGLM-5",
 }
 
-APPROACH_COLORS = {
-    "claude-code": "#E07B39",
-    "codex": "#10A37F",
-    "swe-agent": "#6C5CE7",
-    "opencode": "#0984E3",
+APPROACH_MODEL_COLORS = {
+    "claude-code/claude-opus-4-6": "#E07B39",
+    "codex/gpt-5.4": "#10A37F",
+    "codex/gpt-5.3-codex": "#0D8A6A",
+    "swe-agent/gpt-5.4": "#6C5CE7",
+    "swe-agent/gpt-5.2-codex": "#8E7CF7",
+    "swe-agent/z-ai_glm-5": "#A29BFE",
+    "opencode/gpt-5.4": "#0984E3",
+    "opencode/gpt-5.2-codex": "#3AA0F0",
+    "opencode/z-ai_glm-5": "#74B9FF",
 }
+
+# Aliases used by plot functions (set to approach_model variants)
+APPROACH_ORDER = APPROACH_MODEL_ORDER
+APPROACH_LABELS = APPROACH_MODEL_LABELS
+APPROACH_COLORS = APPROACH_MODEL_COLORS
 
 GRADE_COLORS = {
     "A": "#27ae60",
@@ -72,6 +99,17 @@ JOURNAL_MAP = {
     "10.1163_": "Other",
 }
 
+# Journal → Discipline mapping
+JOURNAL_DISCIPLINE = {
+    "AER": "Economics", "AER:I": "Economics",
+    "AEJ:AP": "Economics", "AEJ:Pol": "Economics", "AEJ:Mac": "Economics",
+    "QJE": "Economics", "JPE": "Economics", "EJ": "Economics",
+    "REStud": "Economics", "Econometrica": "Economics",
+    "AJPS": "Political Science", "APSR": "Political Science",
+    "JOP": "Political Science",
+    "SSRN": "Other", "Other": "Other",
+}
+
 # Fallback titles for papers missing metadata.json
 FALLBACK_TITLES = {
     "10.1093_ej_ueab096": "Hobo Economicus: The Causes and Effects of Homelessness",
@@ -99,11 +137,14 @@ def apply_style(ax):
     ax.tick_params(labelsize=14)
 
 
-def save_figure(fig, output_dir: Path, name: str):
-    fig.savefig(output_dir / f"{name}.png", dpi=300, bbox_inches="tight")
-    fig.savefig(output_dir / f"{name}.pdf", bbox_inches="tight")
+def save_figure(fig, output_dir: Path, name: str, subdir: str = ""):
+    target = output_dir / subdir if subdir else output_dir
+    target.mkdir(parents=True, exist_ok=True)
+    fig.savefig(target / f"{name}.png", dpi=300, bbox_inches="tight")
+    fig.savefig(target / f"{name}.pdf", bbox_inches="tight")
     plt.close(fig)
-    print(f"  Saved {name}")
+    prefix = f"{subdir}/" if subdir else ""
+    print(f"  Saved {prefix}{name}")
 
 
 # ============================================================================
@@ -119,13 +160,11 @@ def _load_json(path: Path) -> dict | None:
 
 
 def _parse_item_number(item_id: str) -> int | None:
-    """Extract numeric part from 'Table 3', 'Figure A.2', etc."""
     m = re.search(r"(\d+)", item_id)
     return int(m.group(1)) if m else None
 
 
 def _parse_item_type(item_id: str, item_type: str | None) -> str:
-    """Normalize item type."""
     if item_type and item_type.lower() in ("table", "figure"):
         return item_type.lower()
     low = item_id.lower()
@@ -144,7 +183,6 @@ def _infer_journal(paper_slug: str) -> str:
 
 
 def _count_code_in_workspace(workspace_dir: Path) -> tuple[int, int]:
-    """Return (n_code_files, total_chars)."""
     n_files = 0
     total_chars = 0
     if not workspace_dir.exists():
@@ -159,8 +197,36 @@ def _count_code_in_workspace(workspace_dir: Path) -> tuple[int, int]:
     return n_files, total_chars
 
 
+CODE_EXT_TO_LANG = {
+    ".do": "Stata", ".ado": "Stata", ".dct": "Stata",
+    ".R": "R", ".r": "R", ".Rmd": "R", ".rmd": "R", ".Rnw": "R",
+    ".py": "Python",
+    ".m": "Matlab",
+    ".jl": "Julia",
+    ".sas": "SAS",
+    ".sps": "SPSS",
+}
+
+
+def _classify_original_language(paper_dir: Path) -> tuple[str, list[str]]:
+    """Return (primary_language, sorted list of all languages) for a replication package."""
+    lang_counts: dict[str, int] = {}
+    if not paper_dir.exists():
+        return "Unknown", []
+    for f in paper_dir.rglob("*"):
+        if not f.is_file():
+            continue
+        lang = CODE_EXT_TO_LANG.get(f.suffix)
+        if lang:
+            lang_counts[lang] = lang_counts.get(lang, 0) + 1
+    if not lang_counts:
+        return "Unknown", []
+    primary = max(lang_counts, key=lang_counts.get)
+    all_langs = sorted(lang_counts.keys(), key=lambda l: -lang_counts[l])
+    return primary, all_langs
+
+
 def _dataset_stats(data_dir: Path) -> tuple[int, int]:
-    """Return (n_files, total_bytes) for a paper's data directory."""
     n_files = 0
     total_bytes = 0
     if not data_dir.exists():
@@ -176,9 +242,7 @@ def _dataset_stats(data_dir: Path) -> tuple[int, int]:
 
 
 def _query_opencode_db_for_workspace(workspace_dir: str) -> dict | None:
-    """Query OpenCode's SQLite DB for token usage matching a workspace path."""
     import sqlite3
-
     db_path = Path.home() / ".local" / "share" / "opencode" / "opencode.db"
     if not db_path.exists():
         return None
@@ -218,18 +282,12 @@ def _query_opencode_db_for_workspace(workspace_dir: str) -> dict | None:
 
 
 def _parse_approach_from_dirname(dirname: str, paper_slug: str) -> tuple[str, str] | None:
-    """Parse model and approach from run directory name.
-
-    Dir format: {model}_{paper_slug}_{approach}
-    Returns (model, approach) or None.
-    """
-    # Find the paper_slug in the dirname and split around it
     idx = dirname.find(f"_{paper_slug}_")
     if idx == -1:
         return None
     model = dirname[:idx]
     approach = dirname[idx + len(f"_{paper_slug}_"):]
-    if approach not in APPROACH_ORDER:
+    if approach not in APPROACH_ORDER_RAW:
         return None
     return model, approach
 
@@ -237,6 +295,72 @@ def _parse_approach_from_dirname(dirname: str, paper_slug: str) -> tuple[str, st
 # ============================================================================
 # Data Loading
 # ============================================================================
+
+def _load_extracted_table_row_types(run_dir: Path) -> dict[tuple[str, str, str], str]:
+    lookup = {}
+    for ms_path in [
+        run_dir / "explainer_workspace" / "methodology_summary.json",
+        run_dir / "workspace" / "methodology_summary.json",
+    ]:
+        if not ms_path.exists():
+            continue
+        ms = _load_json(ms_path)
+        if not ms:
+            continue
+        for table in ms.get("extracted_tables", []):
+            table_id = table.get("table_id", "")
+            for cell in table.get("cells", []):
+                key = (table_id, cell.get("row_label", ""), cell.get("column_label", ""))
+                lookup[key] = cell.get("row_type", "")
+        break
+    return lookup
+
+
+def _load_original_significance(results_dir: Path, paper_slug: str) -> dict[tuple[str, str, str], int]:
+    lookup = {}
+    summaries_dir = results_dir / paper_slug / "summaries"
+    results_json = summaries_dir / f"{paper_slug}_results.json"
+    if not results_json.exists():
+        return lookup
+    data = _load_json(results_json)
+    if not data:
+        return lookup
+    for table in data.get("tables", []):
+        table_id = table.get("table_id", "")
+        for cell in table.get("cells", []):
+            if cell.get("row_type") != "coefficient":
+                continue
+            key = (table_id, cell.get("row_label", ""), cell.get("column_label", ""))
+            stars = cell.get("significance_stars", 0)
+            lookup[key] = int(stars) if stars is not None else 0
+    return lookup
+
+
+def _load_replicator_significance(run_dir: Path) -> dict[tuple[str, str, str], int]:
+    lookup = {}
+    for base in [run_dir / "explainer_workspace" / "replicator_outputs",
+                 run_dir / "workspace"]:
+        if not base.exists():
+            continue
+        for table_json in sorted(base.glob("table_*.json")):
+            data = _load_json(table_json)
+            if not data or "cells" not in data:
+                continue
+            table_id = data.get("table_id", "")
+            cells = data["cells"]
+            if cells and isinstance(cells[0], list):
+                cells = [c for row in cells for c in row if isinstance(c, dict)]
+            for c in cells:
+                if not isinstance(c, dict):
+                    continue
+                if c.get("row_type") != "coefficient":
+                    continue
+                key = (table_id, c.get("row_label", ""), c.get("column_label", ""))
+                stars = c.get("significance_stars", 0)
+                lookup[key] = int(stars) if stars is not None else 0
+        break
+    return lookup
+
 
 def load_results(results_dir: Path, papers_dir: Path | None = None) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Load all benchmark results into run-level, item-level, and cell-level DataFrames."""
@@ -272,16 +396,31 @@ def load_results(results_dir: Path, papers_dir: Path | None = None) -> tuple[pd.
 
             # Load optional files
             er = _load_json(run_dir / "explanation_report.json")
+            # Prefer explainer_workspace copy (has primary_fault); fall back to top-level
+            explainer = _load_json(run_dir / "explainer_workspace" / "explainer_report.json")
+            if explainer is None:
+                explainer = _load_json(run_dir / "explainer_report.json")
             result = _load_json(run_dir / "result.json")
             usage = _load_json(run_dir / "usage.json")
             workspace = run_dir / "workspace"
             meth_summary = _load_json(workspace / "methodology_summary.json")
 
-            # Build explanation lookup
+            # Load row_type and significance lookups for cell enrichment
+            row_type_lookup = _load_extracted_table_row_types(run_dir)
+            orig_sig_lookup = _load_original_significance(results_dir, paper_slug)
+            repl_sig_lookup = _load_replicator_significance(run_dir)
+
+            # Build explanation lookup (from explanation_report)
             explanation_map = {}
             if er and "analyses" in er:
                 for analysis in er["analyses"]:
                     explanation_map[analysis.get("item_id", "")] = analysis
+
+            # Build explainer lookup (from explainer_report — has primary_fault)
+            explainer_map = {}
+            if explainer and "analyses" in explainer:
+                for analysis in explainer["analyses"]:
+                    explainer_map[analysis.get("item_id", "")] = analysis
 
             # Parse items
             items = vr.get("item_verifications", [])
@@ -298,6 +437,8 @@ def load_results(results_dir: Path, papers_dir: Path | None = None) -> tuple[pd.
                 grade = item.get("grade", "F")
                 judge_error = item.get("judge_error", False)
                 unverifiable = item.get("unverifiable", False)
+                comparison_notes = item.get("comparison_notes", "")
+                non_numerical = "non-numerical" in comparison_notes.lower()
 
                 grade_counts[grade] += 1
                 if item_type == "table":
@@ -325,23 +466,36 @@ def load_results(results_dir: Path, papers_dir: Path | None = None) -> tuple[pd.
                     for cell in cells:
                         ov = cell.get("original_value")
                         rv = cell.get("replicated_value")
-                        note = cell.get("note", "")
                         is_numeric = (ov is not None) or (cell.get("percent_difference") is not None)
                         if not is_numeric and rv is not None:
-                            # replicated_value exists but no original — still numeric
                             try:
                                 float(rv)
                                 is_numeric = True
                             except (TypeError, ValueError):
                                 pass
+
+                        # Enrich with row_type from extracted tables
+                        cell_row_label = cell.get("row_label", "")
+                        cell_col_label = cell.get("column_label", "")
+                        rt_key = (item_id, cell_row_label, cell_col_label)
+                        row_type = row_type_lookup.get(rt_key, "")
+
+                        # Significance for coefficient cells
+                        sig_stars_orig = None
+                        sig_stars_repl = None
+                        if row_type == "coefficient":
+                            se_key = (item_id, cell_row_label, cell_col_label)
+                            sig_stars_orig = orig_sig_lookup.get(se_key)
+                            sig_stars_repl = repl_sig_lookup.get(se_key)
+
                         cell_rows.append({
                             "paper_slug": paper_slug,
                             "approach": approach,
                             "model": model,
                             "item_id": item_id,
                             "item_grade": grade,
-                            "row_label": cell.get("row_label", ""),
-                            "column_label": cell.get("column_label", ""),
+                            "row_label": cell_row_label,
+                            "column_label": cell_col_label,
                             "original_value": ov,
                             "replicated_value": rv,
                             "percent_difference": cell.get("percent_difference"),
@@ -349,10 +503,14 @@ def load_results(results_dir: Path, papers_dir: Path | None = None) -> tuple[pd.
                             "sign_match": cell.get("sign_match"),
                             "cell_grade": cell.get("grade", ""),
                             "is_numeric": is_numeric,
+                            "row_type": row_type,
+                            "significance_stars_orig": sig_stars_orig,
+                            "significance_stars_repl": sig_stars_repl,
                         })
 
-                # Explanation data
+                # Explanation data (from both reports)
                 expl = explanation_map.get(item_id, {})
+                expl2 = explainer_map.get(item_id, {})
 
                 item_rows.append({
                     "paper_slug": paper_slug,
@@ -365,26 +523,65 @@ def load_results(results_dir: Path, papers_dir: Path | None = None) -> tuple[pd.
                     "grade_num": GRADE_TO_NUM.get(grade, np.nan),
                     "judge_error": judge_error,
                     "unverifiable": unverifiable,
+                    "non_numerical": non_numerical,
                     "n_cells_compared": n_cells,
                     "mean_pct_diff": mean_pct,
-                    "fault_attribution": expl.get("fault_attribution"),
-                    "confidence": expl.get("confidence"),
+                    "primary_fault": expl2.get("primary_fault", ""),
+                    "additional_faults": expl2.get("additional_faults", []),
+                    "fault_explanation": expl2.get("fault_explanation", ""),
+                    "confidence": expl2.get("confidence", expl.get("confidence")),
                     "likely_causes": expl.get("likely_causes", []),
                     "description_of_discrepancy": expl.get("description_of_discrepancy", ""),
                 })
 
             # Run-level fields
             overall_grade = vr.get("overall_grade", "F")
-            duration = result.get("duration_seconds") if result else None
+
+            # Get duration from run_log.txt (authoritative source)
+            duration = None
+            for log_path in [workspace / "run_log.txt",
+                             run_dir / "explainer_workspace" / "run_log.txt"]:
+                if log_path.exists():
+                    m = re.search(r"^Duration:\s*([\d.]+)s", log_path.read_text(), re.MULTILINE)
+                    if m:
+                        duration = float(m.group(1))
+                        break
+            # Fall back to result.json if no run_log.txt
+            if duration is None and result:
+                duration = result.get("duration_seconds") or None
+
             n_code_files, total_code_chars = _count_code_in_workspace(workspace)
 
             meth_len = 0
             n_tables_summary = 0
             n_figures_summary = 0
+            n_table_templates = 0
             if meth_summary:
                 meth_len = len(json.dumps(meth_summary))
                 n_tables_summary = len(meth_summary.get("tables", []))
                 n_figures_summary = len(meth_summary.get("figures", []))
+                n_table_templates = len(meth_summary.get("extracted_tables", []))
+
+            if n_table_templates == 0:
+                ew_ms = _load_json(run_dir / "explainer_workspace" / "methodology_summary.json")
+                if ew_ms:
+                    n_table_templates = len(ew_ms.get("extracted_tables", []))
+
+            # Count table_*.json files produced by replicator
+            n_table_jsons = 0
+            for base in [run_dir / "explainer_workspace" / "replicator_outputs",
+                         run_dir / "workspace"]:
+                if base.exists():
+                    n_table_jsons = len(list(base.glob("table_*.json")))
+                    break
+
+            # Count .py files produced
+            n_py_files = 0
+            for base in [run_dir / "explainer_workspace",
+                         run_dir / "workspace"]:
+                if base.exists():
+                    n_py_files = len(list(base.rglob("*.py")))
+                    break
 
             prompt_tokens = 0
             completion_tokens = 0
@@ -422,17 +619,22 @@ def load_results(results_dir: Path, papers_dir: Path | None = None) -> tuple[pd.
             total_data_bytes = 0
             paper_title = FALLBACK_TITLES.get(paper_slug, paper_slug)
             journal = _infer_journal(paper_slug)
+            original_language = "Unknown"
+            original_languages_all = []
             if papers_dir:
                 paper_data_dir = papers_dir / paper_slug / "data"
                 n_datasets, total_data_bytes = _dataset_stats(paper_data_dir)
                 meta = _load_json(papers_dir / paper_slug / "metadata.json")
                 if meta and "title" in meta:
                     paper_title = meta["title"]
+                original_language, original_languages_all = _classify_original_language(papers_dir / paper_slug)
 
             run_rows.append({
                 "paper_slug": paper_slug,
                 "paper_title": paper_title,
                 "journal": journal,
+                "original_language": original_language,
+                "original_languages_all": "+".join(original_languages_all) if original_languages_all else "Unknown",
                 "approach": approach,
                 "model": model,
                 "provider": "anthropic" if "claude" in model else "openai",
@@ -446,6 +648,9 @@ def load_results(results_dir: Path, papers_dir: Path | None = None) -> tuple[pd.
                 "methodology_summary_len": meth_len,
                 "n_tables_in_summary": n_tables_summary,
                 "n_figures_in_summary": n_figures_summary,
+                "n_table_templates": n_table_templates,
+                "n_table_jsons": n_table_jsons,
+                "n_py_files": n_py_files,
                 "n_code_files": n_code_files,
                 "total_code_chars": total_code_chars,
                 "n_datasets": n_datasets,
@@ -462,15 +667,37 @@ def load_results(results_dir: Path, papers_dir: Path | None = None) -> tuple[pd.
     df_items = pd.DataFrame(item_rows)
     df_cells = pd.DataFrame(cell_rows)
 
+    # Add discipline column to runs
+    if not df_runs.empty:
+        df_runs["discipline"] = df_runs["journal"].map(
+            lambda j: JOURNAL_DISCIPLINE.get(j, "Other")
+        )
+
+    # Create composite approach/model key for all DataFrames
+    for df in [df_runs, df_items, df_cells]:
+        if not df.empty:
+            df["approach_raw"] = df["approach"]
+            df["approach"] = df["approach"].astype(str) + "/" + df["model"].astype(str)
+
+    # Build ordered category list from data (keeps only combos that exist)
+    combos_present = []
+    if not df_runs.empty:
+        for combo in APPROACH_MODEL_ORDER:
+            if combo in df_runs["approach"].values:
+                combos_present.append(combo)
+        for combo in df_runs["approach"].unique():
+            if combo not in combos_present:
+                combos_present.append(combo)
+
     # Enforce categorical ordering
     if not df_runs.empty:
-        df_runs["approach"] = pd.Categorical(df_runs["approach"], categories=APPROACH_ORDER, ordered=True)
+        df_runs["approach"] = pd.Categorical(df_runs["approach"], categories=combos_present, ordered=True)
         df_runs["overall_grade"] = pd.Categorical(df_runs["overall_grade"], categories=GRADE_ORDER, ordered=True)
     if not df_items.empty:
-        df_items["approach"] = pd.Categorical(df_items["approach"], categories=APPROACH_ORDER, ordered=True)
+        df_items["approach"] = pd.Categorical(df_items["approach"], categories=combos_present, ordered=True)
         df_items["grade"] = pd.Categorical(df_items["grade"], categories=GRADE_ORDER, ordered=True)
     if not df_cells.empty:
-        df_cells["approach"] = pd.Categorical(df_cells["approach"], categories=APPROACH_ORDER, ordered=True)
+        df_cells["approach"] = pd.Categorical(df_cells["approach"], categories=combos_present, ordered=True)
         df_cells["cell_grade"] = pd.Categorical(df_cells["cell_grade"], categories=GRADE_ORDER, ordered=True)
 
     print(f"Loaded {len(df_runs)} runs, {len(df_items)} items, {len(df_cells)} cells")
@@ -478,836 +705,239 @@ def load_results(results_dir: Path, papers_dir: Path | None = None) -> tuple[pd.
 
 
 # ============================================================================
-# Section 1: Performance Distribution
+# Plot functions (helper to get approach list from data)
 # ============================================================================
 
-def plot_overall_grade_distribution(df_runs: pd.DataFrame, output_dir: Path):
-    """Grouped bar chart of overall grades by approach."""
-    ct = pd.crosstab(df_runs["approach"], df_runs["overall_grade"], normalize="index") * 100
-    ct = ct.reindex(columns=GRADE_ORDER, fill_value=0)
-
-    fig, ax = plt.subplots(figsize=(12, 6))
-    x = np.arange(len(APPROACH_ORDER))
-    width = 0.13
-    for i, grade in enumerate(GRADE_ORDER):
-        if grade in ct.columns:
-            vals = [ct.loc[a, grade] if a in ct.index else 0 for a in APPROACH_ORDER]
-        else:
-            vals = [0] * len(APPROACH_ORDER)
-        ax.bar(x + i * width, vals, width, label=grade, color=GRADE_COLORS[grade], edgecolor="white")
-
-    ax.set_xticks(x + width * 2.5)
-    ax.set_xticklabels([APPROACH_LABELS[a] for a in APPROACH_ORDER])
-    ax.set_ylabel("Share of runs (%)", fontsize=18, fontweight="bold")
-    ax.legend(fontsize=14, ncol=6, loc="upper right")
-    apply_style(ax)
-    plt.tight_layout()
-    save_figure(fig, output_dir, "overall_grades")
+def _approaches_in(df, col="approach"):
+    """Return approaches present in data, ordered by APPROACH_ORDER."""
+    present = df[col].unique() if not df.empty else []
+    return ([a for a in APPROACH_ORDER if a in present]
+            + [a for a in present if a not in APPROACH_ORDER])
 
 
-def plot_item_grade_by_type(df_items: pd.DataFrame, output_dir: Path, item_type: str | None, name: str):
-    """Grade distribution for items, optionally filtered by type."""
-    df = df_items if item_type is None else df_items[df_items["item_type"] == item_type]
+# ============================================================================
+# Section: Setup & Descriptives
+# ============================================================================
+
+def plot_extractor_row_type_distribution(df_cells: pd.DataFrame, output_dir: Path, subdir: str = ""):
+    """Distribution of cell row_type values (single panel, approach-independent counts)."""
+    df = df_cells[df_cells["row_type"].notna() & (df_cells["row_type"] != "")].copy()
     if df.empty:
-        print(f"  Skipping {name}: no data")
+        print("  Skipping extractor_row_type_distribution: no row_type data")
         return
-
-    ct = pd.crosstab(df["approach"], df["grade"], normalize="index") * 100
-    ct = ct.reindex(columns=GRADE_ORDER, fill_value=0)
-
-    fig, ax = plt.subplots(figsize=(12, 6))
-    ct.loc[APPROACH_ORDER].plot(kind="bar", ax=ax, color=[GRADE_COLORS[g] for g in ct.columns],
-                                edgecolor="white", width=0.8)
-    ax.set_xticklabels([APPROACH_LABELS.get(a, a) for a in APPROACH_ORDER], rotation=0)
-    ax.set_ylabel("Share of items (%)", fontsize=18, fontweight="bold")
-    ax.legend(fontsize=14, ncol=6, loc="upper right")
-    apply_style(ax)
-    plt.tight_layout()
-    save_figure(fig, output_dir, name)
-
-
-def plot_f_grade_breakdown(df_items: pd.DataFrame, df_runs: pd.DataFrame, output_dir: Path):
-    """Breakdown of F grades: unverifiable, judge_error, no code, other."""
-    f_items = df_items[df_items["grade"] == "F"].copy()
-    if f_items.empty:
-        print("  Skipping f_grade_breakdown: no F grades")
-        return
-
-    # Build no-code lookup from df_runs
-    no_code_runs = set(
-        df_runs.loc[df_runs["n_code_files"] == 0, ["paper_slug", "approach"]]
-        .apply(tuple, axis=1)
-    )
-
-    def categorize(row):
-        if row["judge_error"]:
-            return "Judge Error"
-        if row["unverifiable"]:
-            return "Unverifiable"
-        if (row["paper_slug"], row["approach"]) in no_code_runs:
-            return "No Code"
-        return "Other F"
-
-    f_items["f_category"] = f_items.apply(categorize, axis=1)
-
-    ct = pd.crosstab(f_items["approach"], f_items["f_category"])
-    cat_order = ["No Code", "Unverifiable", "Judge Error", "Other F"]
-    ct = ct.reindex(columns=[c for c in cat_order if c in ct.columns], fill_value=0)
-    cat_colors = {"No Code": "#e74c3c", "Unverifiable": "#e67e22", "Judge Error": "#9b59b6", "Other F": "#7f8c8d"}
+    df_dedup = df.drop_duplicates(subset=["paper_slug", "item_id", "row_label", "column_label"])
+    type_counts = df_dedup["row_type"].value_counts()
+    type_order = type_counts.index.tolist()
 
     fig, ax = plt.subplots(figsize=(10, 6))
-    ct.loc[[a for a in APPROACH_ORDER if a in ct.index]].plot(
-        kind="bar", stacked=True, ax=ax,
-        color=[cat_colors.get(c, "#95a5a6") for c in ct.columns],
-        edgecolor="white", width=0.7
-    )
-    ax.set_xticklabels([APPROACH_LABELS.get(a, a) for a in APPROACH_ORDER if a in ct.index], rotation=0)
-    ax.set_ylabel("Number of F-graded items", fontsize=18, fontweight="bold")
-    ax.legend(fontsize=14)
+    x = np.arange(len(type_order))
+    ax.bar(x, type_counts.values, color="#3498db", edgecolor="white", alpha=0.8)
+    ax.set_xticks(x)
+    ax.set_xticklabels(type_order, rotation=45, ha="right", fontsize=11)
+    ax.set_ylabel("Number of cells", fontsize=16, fontweight="bold")
+    for i, v in enumerate(type_counts.values):
+        ax.text(i, v + max(type_counts.values) * 0.01, str(v), ha="center", fontsize=11, fontweight="bold")
     apply_style(ax)
     plt.tight_layout()
-    save_figure(fig, output_dir, "f_grade_breakdown")
+    save_figure(fig, output_dir, "extractor_row_type_distribution", subdir)
 
 
-def plot_f_grade_table_vs_figure(df_items: pd.DataFrame, df_runs: pd.DataFrame, output_dir: Path):
-    """F-grade breakdown comparing tables vs figures, by approach."""
-    f_items = df_items[df_items["grade"] == "F"].copy()
-    if f_items.empty:
-        print("  Skipping f_grade_table_vs_figure: no F grades")
-        return
+def plot_first_fail_distribution(df_items: pd.DataFrame, output_dir: Path, subdir: str = ""):
+    """Bar chart: number of papers that completely failed (all items F) by approach."""
+    paper_approach = df_items.groupby(["paper_slug", "approach"], observed=True).agg(
+        n_items=("grade", "size"),
+        n_f=("grade", lambda x: (x == "F").sum()),
+    ).reset_index()
+    paper_approach["all_f"] = paper_approach["n_items"] == paper_approach["n_f"]
+    approaches = _approaches_in(paper_approach)
 
-    # Only tables and figures
-    f_items = f_items[f_items["item_type"].isin(["table", "figure"])]
-
-    no_code_runs = set(
-        df_runs.loc[df_runs["n_code_files"] == 0, ["paper_slug", "approach"]]
-        .apply(tuple, axis=1)
-    )
-
-    def categorize(row):
-        if row["judge_error"]:
-            return "Judge Error"
-        if row["unverifiable"]:
-            return "Unverifiable"
-        if (row["paper_slug"], row["approach"]) in no_code_runs:
-            return "No Code"
-        return "Other F"
-
-    f_items["f_category"] = f_items.apply(categorize, axis=1)
-    cat_order = ["No Code", "Unverifiable", "Judge Error", "Other F"]
-    cat_colors = {"No Code": "#e74c3c", "Unverifiable": "#e67e22", "Judge Error": "#9b59b6", "Other F": "#7f8c8d"}
-
-    approaches = [a for a in APPROACH_ORDER if a in f_items["approach"].values]
-    fig, axes = plt.subplots(1, 2, figsize=(14, 6), sharey=True)
-
-    for ax, itype in zip(axes, ["table", "figure"]):
-        sub = f_items[f_items["item_type"] == itype]
+    fig, ax = plt.subplots(figsize=(10, 6))
+    xlabels, counts_all_f, counts_total, colors = [], [], [], []
+    for a in approaches:
+        sub = paper_approach[paper_approach["approach"] == a]
         if sub.empty:
-            ax.set_visible(False)
             continue
+        xlabels.append(APPROACH_LABELS.get(a, a).replace("\n", " "))
+        counts_all_f.append(int(sub["all_f"].sum()))
+        counts_total.append(len(sub))
+        colors.append(APPROACH_COLORS.get(a, "#95a5a6"))
 
-        ct = pd.crosstab(sub["approach"], sub["f_category"])
-        ct = ct.reindex(columns=[c for c in cat_order if c in ct.columns], fill_value=0)
-        ct = ct.reindex([a for a in approaches if a in ct.index])
-
-        ct.plot(kind="bar", stacked=True, ax=ax,
-                color=[cat_colors.get(c, "#95a5a6") for c in ct.columns],
-                edgecolor="white", width=0.7, legend=False)
-        ax.set_xticklabels([APPROACH_LABELS.get(a, a) for a in ct.index], rotation=0, fontsize=12)
-        ax.set_xlabel(f"{itype.capitalize()}s", fontsize=18, fontweight="bold")
-        apply_style(ax)
-
-    axes[0].set_ylabel("Number of F-graded items", fontsize=18, fontweight="bold")
-    # Single legend
-    handles, labels = axes[0].get_legend_handles_labels()
-    if not handles:
-        handles, labels = axes[1].get_legend_handles_labels()
-    fig.legend(handles, labels, fontsize=14, loc="upper right", bbox_to_anchor=(0.98, 0.98))
-    plt.tight_layout(rect=[0, 0, 0.98, 1])
-    save_figure(fig, output_dir, "f_grade_table_vs_figure")
-
-
-def plot_cell_count_distribution(df_cells: pd.DataFrame, output_dir: Path):
-    """Distribution of the number of numeric cells compared per table, by approach."""
-    if df_cells.empty:
-        print("  Skipping cell_count_distribution: no cell data")
-        return
-
-    # Count numeric cells per (paper, approach, item)
-    df_num = df_cells[df_cells["is_numeric"]]
-    cell_counts = df_num.groupby(["paper_slug", "approach", "item_id"]).size().reset_index(name="n_cells")
-    approaches = [a for a in APPROACH_ORDER if a in cell_counts["approach"].values]
-
-    fig, ax = plt.subplots(figsize=(10, 6))
-    data = []
-    labels = []
-    colors = []
-    for a in approaches:
-        vals = cell_counts.loc[cell_counts["approach"] == a, "n_cells"].values
-        if len(vals) > 0:
-            data.append(vals)
-            labels.append(APPROACH_LABELS.get(a, a))
-            colors.append(APPROACH_COLORS[a])
-
-    if not data:
-        return
-
-    bp = ax.boxplot(data, tick_labels=labels, patch_artist=True, widths=0.6)
-    for patch, c in zip(bp["boxes"], colors):
-        patch.set_facecolor(c)
-        patch.set_alpha(0.7)
-    for median in bp["medians"]:
-        median.set_color("black")
-        median.set_linewidth(2)
-
-    for i, (vals, c) in enumerate(zip(data, colors)):
-        jitter = np.random.normal(0, 0.04, size=len(vals))
-        ax.scatter(np.full(len(vals), i + 1) + jitter, vals,
-                   alpha=0.3, s=15, color=c, zorder=3)
-
-    ax.set_ylabel("Number of cells per table", fontsize=18, fontweight="bold")
+    x = np.arange(len(xlabels))
+    width = 0.35
+    ax.bar(x - width / 2, counts_total, width, label="Total papers", color=colors, alpha=0.3, edgecolor="white")
+    ax.bar(x + width / 2, counts_all_f, width, label="Completely failed (all F)", color=colors, alpha=0.8, edgecolor="white")
+    ax.set_xticks(x)
+    ax.set_xticklabels(xlabels, fontsize=10, rotation=25, ha="right")
+    ax.set_ylabel("Number of papers", fontsize=16, fontweight="bold")
+    for i, (nf, nt) in enumerate(zip(counts_all_f, counts_total)):
+        pct = nf / nt * 100 if nt > 0 else 0
+        ax.text(i + width / 2, nf + 0.3, f"{nf} ({pct:.0f}%)", ha="center", fontsize=10, fontweight="bold")
+    ax.legend(fontsize=12)
     apply_style(ax)
     plt.tight_layout()
-    save_figure(fig, output_dir, "cell_count_distribution")
+    save_figure(fig, output_dir, "first_fail_distribution", subdir)
 
 
-def plot_cell_grade_distribution(df_cells: pd.DataFrame, output_dir: Path):
-    """Grade distribution at the individual cell level (numeric cells only), by approach."""
-    if df_cells.empty:
-        print("  Skipping cell_grade_distribution: no cell data")
-        return
-
-    df = df_cells[df_cells["cell_grade"].isin(GRADE_ORDER) & df_cells["is_numeric"]].copy()
-    if df.empty:
-        return
-
-    approaches = [a for a in APPROACH_ORDER if a in df["approach"].values]
-    ct = pd.crosstab(df["approach"], df["cell_grade"], normalize="index") * 100
-    ct = ct.reindex(columns=GRADE_ORDER, fill_value=0)
-    ct = ct.reindex([a for a in approaches if a in ct.index])
-
-    fig, ax = plt.subplots(figsize=(10, 6))
-    ct.plot(kind="bar", stacked=True, ax=ax,
-            color=[GRADE_COLORS[g] for g in ct.columns], edgecolor="white", width=0.7)
-    ax.set_xticklabels([APPROACH_LABELS.get(a, a) for a in ct.index], rotation=0, fontsize=14)
-    ax.set_ylabel("Share of cells (%)", fontsize=18, fontweight="bold")
-    ax.set_xlabel("")
-    ax.legend(fontsize=14, ncol=6, loc="upper right")
-    apply_style(ax)
-    plt.tight_layout()
-    save_figure(fig, output_dir, "cell_grade_distribution")
-
-
-def plot_cell_pct_difference(df_cells: pd.DataFrame, output_dir: Path):
-    """Distribution of percent difference at the cell level, by approach."""
-    df = df_cells[df_cells["percent_difference"].notna()].copy()
-    if df.empty:
-        print("  Skipping cell_pct_difference: no percent difference data")
-        return
-
-    # Cap at 200% for readability
-    df["pct_capped"] = df["percent_difference"].clip(upper=200)
-    approaches = [a for a in APPROACH_ORDER if a in df["approach"].values]
-
-    fig, axes = plt.subplots(1, 2, figsize=(14, 6))
-
-    # Left: boxplot by approach
-    ax = axes[0]
-    data = []
-    labels = []
-    colors = []
-    for a in approaches:
-        vals = df.loc[df["approach"] == a, "pct_capped"].values
-        if len(vals) > 0:
-            data.append(vals)
-            labels.append(APPROACH_LABELS.get(a, a))
-            colors.append(APPROACH_COLORS[a])
-
-    if data:
-        bp = ax.boxplot(data, tick_labels=labels, patch_artist=True, widths=0.6)
-        for patch, c in zip(bp["boxes"], colors):
-            patch.set_facecolor(c)
-            patch.set_alpha(0.7)
-        for median in bp["medians"]:
-            median.set_color("black")
-            median.set_linewidth(2)
-    ax.set_ylabel("Percent difference (capped at 200%)", fontsize=16, fontweight="bold")
-    apply_style(ax)
-
-    # Right: histogram of pct_diff buckets
-    ax2 = axes[1]
-    bins = [0, 1, 5, 10, 25, 50, 100, 200, float("inf")]
-    bin_labels = ["<1%", "1-5%", "5-10%", "10-25%", "25-50%", "50-100%", "100-200%", ">200%"]
-    df["pct_bin"] = pd.cut(df["percent_difference"], bins=bins, labels=bin_labels, right=True)
-
-    ct = pd.crosstab(df["pct_bin"], df["approach"], normalize="columns") * 100
-    ct = ct.reindex(columns=[a for a in approaches if a in ct.columns])
-
-    x = np.arange(len(bin_labels))
-    width = 0.8 / len(approaches)
-    for i, a in enumerate(approaches):
-        if a not in ct.columns:
-            continue
-        ax2.bar(x + i * width, ct[a].values, width, label=APPROACH_LABELS.get(a, a),
-                color=APPROACH_COLORS[a], alpha=0.8, edgecolor="white")
-
-    ax2.set_xticks(x + width * (len(approaches) - 1) / 2)
-    ax2.set_xticklabels(bin_labels, rotation=45, ha="right", fontsize=11)
-    ax2.set_ylabel("Share of cells (%)", fontsize=16, fontweight="bold")
-    ax2.legend(fontsize=11)
-    apply_style(ax2)
-
-    plt.tight_layout()
-    save_figure(fig, output_dir, "cell_pct_difference")
-
-
-def plot_extractor_cells(df_cells: pd.DataFrame, output_dir: Path):
+def plot_extractor_cells(df_cells: pd.DataFrame, output_dir: Path, subdir: str = ""):
     """Extractor output: numeric cells per table distribution + replicator fill rate."""
     if df_cells.empty:
-        print("  Skipping extractor_cells: no cell data")
         return
-
-    # Filter to numeric cells only
     df_num = df_cells[df_cells["is_numeric"]].copy()
     if df_num.empty:
-        print("  Skipping extractor_cells: no numeric cells")
         return
 
-    # Compute per-table stats: extractor cells (original_value not null) and replicator cells
-    table_stats = df_num.groupby(["paper_slug", "approach", "item_id"]).apply(
+    table_stats = df_num.groupby(["paper_slug", "approach", "item_id"], observed=True).apply(
         lambda g: pd.Series({
             "n_extractor": g["original_value"].notna().sum(),
             "n_replicator": g["replicated_value"].notna().sum(),
         })
     ).reset_index()
 
-    fig, axes = plt.subplots(1, 2, figsize=(14, 6), gridspec_kw={"width_ratios": [2, 1]})
+    fig, axes = plt.subplots(1, 2, figsize=(14, 6))
 
-    # Left: extractor numeric cells per table distribution (histogram)
     ax = axes[0]
     extractor_vals = table_stats["n_extractor"].values
     extractor_vals = extractor_vals[extractor_vals > 0]
     ax.hist(extractor_vals, bins=30, color="#3498db", edgecolor="white", alpha=0.8)
     ax.axvline(np.median(extractor_vals), color="black", linestyle="--", linewidth=2,
                label=f"Median: {np.median(extractor_vals):.0f}")
-    ax.set_xlabel("Numeric cells per table (from extractor)", fontsize=18, fontweight="bold")
-    ax.set_ylabel("Number of tables", fontsize=18, fontweight="bold")
+    ax.set_xlabel("Numeric cells per table (from extractor)", fontsize=16, fontweight="bold")
+    ax.set_ylabel("Number of tables", fontsize=16, fontweight="bold")
     ax.legend(fontsize=14)
     apply_style(ax)
 
-    # Right: total extractor cells vs replicator-filled cells, by approach
     ax2 = axes[1]
-    approaches = [a for a in APPROACH_ORDER if a in table_stats["approach"].values]
+    approaches = _approaches_in(table_stats)
     x = np.arange(len(approaches))
     width = 0.35
-
     ext_totals = [table_stats.loc[table_stats["approach"] == a, "n_extractor"].sum() for a in approaches]
     rep_totals = [table_stats.loc[table_stats["approach"] == a, "n_replicator"].sum() for a in approaches]
-
-    bars1 = ax2.bar(x - width / 2, ext_totals, width, label="Extractor (original)",
-                    color="#3498db", alpha=0.8, edgecolor="white")
-    bars2 = ax2.bar(x + width / 2, rep_totals, width, label="Replicator (filled)",
-                    color="#e67e22", alpha=0.8, edgecolor="white")
-
-    # Add fill rate labels
+    ax2.bar(x - width / 2, ext_totals, width, label="Extractor (original)", color="#3498db", alpha=0.8, edgecolor="white")
+    ax2.bar(x + width / 2, rep_totals, width, label="Replicator (filled)", color="#e67e22", alpha=0.8, edgecolor="white")
     for i, (e, r) in enumerate(zip(ext_totals, rep_totals)):
         pct = r / e * 100 if e > 0 else 0
         ax2.annotate(f"{pct:.0f}%", xy=(x[i] + width / 2, r), xytext=(0, 5),
                      textcoords="offset points", ha="center", fontsize=11, fontweight="bold")
-
     ax2.set_xticks(x)
-    ax2.set_xticklabels([APPROACH_LABELS.get(a, a) for a in approaches], fontsize=11, rotation=15, ha="right")
-    ax2.set_ylabel("Total cells", fontsize=18, fontweight="bold")
+    ax2.set_xticklabels([APPROACH_LABELS.get(a, a).replace("\n", " ") for a in approaches], fontsize=9, rotation=25, ha="right")
+    ax2.set_ylabel("Total cells", fontsize=16, fontweight="bold")
     ax2.legend(fontsize=12)
     apply_style(ax2)
 
     plt.tight_layout()
-    save_figure(fig, output_dir, "extractor_cells")
+    save_figure(fig, output_dir, "extractor_cells", subdir)
 
 
-# ============================================================================
-# Section 2: Determinants of Performance
-# ============================================================================
-
-def plot_item_number_vs_grade(df_items: pd.DataFrame, output_dir: Path):
-    """Mean grade by item number, faceted by table/figure."""
-    df = df_items[df_items["item_number"].notna() & df_items["item_type"].isin(["table", "figure"])].copy()
-    df["item_number"] = df["item_number"].astype(int)
-    # Cap at item 10 for readability
-    df = df[df["item_number"] <= 10]
-
-    if df.empty:
-        print("  Skipping item_number_vs_grade: no data")
-        return
-
-    fig, axes = plt.subplots(1, 2, figsize=(14, 6), sharey=True)
-
-    for ax, itype in zip(axes, ["table", "figure"]):
-        sub = df[df["item_type"] == itype]
-        if sub.empty:
-            ax.set_visible(False)
-            continue
-
-        for approach in APPROACH_ORDER:
-            asub = sub[sub["approach"] == approach]
-            if asub.empty:
-                continue
-            grouped = asub.groupby("item_number")["grade_num"]
-            means = grouped.mean()
-            sems = grouped.sem()
-            ax.errorbar(means.index, means.values, yerr=1.96 * sems.fillna(0).values,
-                        label=APPROACH_LABELS[approach], color=APPROACH_COLORS[approach],
-                        marker="o", capsize=3, linewidth=2)
-
-        ax.set_xlabel(f"{itype.title()} Number", fontsize=18, fontweight="bold")
-        ax.set_yticks(range(6))
-        ax.set_yticklabels(GRADE_ORDER[::-1])
-        apply_style(ax)
-
-    axes[0].set_ylabel("Mean Grade", fontsize=18, fontweight="bold")
-    axes[1].legend(fontsize=14, loc="lower left")
-    plt.tight_layout()
-    save_figure(fig, output_dir, "item_number_vs_grade")
-
-
-def plot_scatter_vs_grade(df: pd.DataFrame, x_col: str, x_label: str, output_dir: Path,
-                          name: str, log_x: bool = False, grade_col: str = "overall_grade_num"):
-    """Generic scatter plot of x_col vs grade, colored by approach."""
-    df_plot = df.dropna(subset=[x_col, grade_col])
-    if df_plot.empty:
-        print(f"  Skipping {name}: no data")
-        return
-
-    fig, ax = plt.subplots(figsize=(10, 7))
-    for approach in APPROACH_ORDER:
-        sub = df_plot[df_plot["approach"] == approach]
+def generate_summary_table(df_runs: pd.DataFrame, df_items: pd.DataFrame, output_dir: Path, subdir: str = ""):
+    rows = []
+    for approach in _approaches_in(df_runs):
+        sub = df_runs[df_runs["approach"] == approach]
+        items = df_items[df_items["approach"] == approach]
         if sub.empty:
             continue
-        ax.scatter(sub[x_col], sub[grade_col] + np.random.uniform(-0.15, 0.15, len(sub)),
-                   color=APPROACH_COLORS[approach], label=APPROACH_LABELS[approach],
-                   alpha=0.6, s=60, edgecolor="white", linewidth=0.5)
+        n = len(sub)
+        mean_grade = sub["overall_grade_num"].mean()
+        pct_ab = ((sub["overall_grade"].isin(["A", "B"])).sum() / n * 100) if n else 0
+        pct_f = ((sub["overall_grade"] == "F").sum() / n * 100) if n else 0
+        mean_dur = sub["duration_seconds"].mean()
+        n_items_total = len(items)
+        item_pct_ab = ((items["grade"].isin(["A", "B"])).sum() / n_items_total * 100) if n_items_total else 0
 
-    if log_x and df_plot[x_col].gt(0).any():
-        ax.set_xscale("log")
-    ax.set_xlabel(x_label, fontsize=18, fontweight="bold")
-    ax.set_ylabel("Overall Grade", fontsize=18, fontweight="bold")
-    ax.set_yticks(range(6))
-    ax.set_yticklabels(GRADE_ORDER[::-1])
-    ax.legend(fontsize=14)
-    apply_style(ax)
-    plt.tight_layout()
-    save_figure(fig, output_dir, name)
+        rows.append({
+            "Approach": APPROACH_LABELS.get(approach, approach).replace("\n", " "),
+            "Runs": n,
+            "Mean Grade": f"{mean_grade:.2f}",
+            "% A-B (runs)": f"{pct_ab:.1f}",
+            "% F (runs)": f"{pct_f:.1f}",
+            "Items": n_items_total,
+            "% A-B (items)": f"{item_pct_ab:.1f}",
+            "Mean Duration (min)": f"{mean_dur / 60:.1f}" if pd.notna(mean_dur) else "—",
+        })
 
-
-def plot_duration_vs_grade(df_runs: pd.DataFrame, output_dir: Path):
-    """Scatter + box: duration vs overall grade, by approach."""
-    df = df_runs.dropna(subset=["duration_seconds", "overall_grade_num"])
-    if df.empty:
-        print("  Skipping duration_vs_grade: no data")
-        return
-
-    fig, axes = plt.subplots(1, 2, figsize=(16, 6), gridspec_kw={"width_ratios": [2, 1]})
-
-    # Scatter
-    ax = axes[0]
-    for approach in APPROACH_ORDER:
-        sub = df[df["approach"] == approach]
-        if sub.empty:
-            continue
-        ax.scatter(sub["duration_seconds"] / 60, sub["overall_grade_num"] +
-                   np.random.uniform(-0.15, 0.15, len(sub)),
-                   color=APPROACH_COLORS[approach], label=APPROACH_LABELS[approach],
-                   alpha=0.6, s=60, edgecolor="white", linewidth=0.5)
-    ax.set_xlabel("Duration (minutes)", fontsize=18, fontweight="bold")
-    ax.set_ylabel("Overall Grade", fontsize=18, fontweight="bold")
-    ax.set_yticks(range(6))
-    ax.set_yticklabels(GRADE_ORDER[::-1])
-    ax.legend(fontsize=14)
-    apply_style(ax)
-
-    # Box by grade
-    ax2 = axes[1]
-    grade_data = [df[df["overall_grade"] == g]["duration_seconds"].dropna() / 60 for g in GRADE_ORDER]
-    bp = ax2.boxplot(grade_data, tick_labels=GRADE_ORDER, patch_artist=True, widths=0.6)
-    for patch, grade in zip(bp["boxes"], GRADE_ORDER):
-        patch.set_facecolor(GRADE_COLORS[grade])
-        patch.set_alpha(0.7)
-    ax2.set_xlabel("Grade", fontsize=18, fontweight="bold")
-    ax2.set_ylabel("Duration (minutes)", fontsize=18, fontweight="bold")
-    apply_style(ax2)
-
-    plt.tight_layout()
-    save_figure(fig, output_dir, "duration_vs_grade")
+    summary = pd.DataFrame(rows)
+    target = output_dir / subdir if subdir else output_dir
+    target.mkdir(parents=True, exist_ok=True)
+    summary.to_csv(target / "summary_table.csv", index=False)
+    latex = summary.to_latex(index=False, escape=True, column_format="l" + "r" * (len(summary.columns) - 1))
+    (target / "summary_table.tex").write_text(latex)
+    print("  Saved summary_table")
 
 
-def plot_cost_distribution(df_runs: pd.DataFrame, output_dir: Path):
-    """Distribution of cost per run by approach (approaches with cost data only)."""
-    df = df_runs[df_runs["total_cost_usd"] > 0].copy()
-    if df.empty:
-        print("  Skipping cost_distribution: no cost data")
-        return
-
-    approaches = [a for a in APPROACH_ORDER if a in df["approach"].values]
-    fig, ax = plt.subplots(figsize=(10, 6))
-
-    data = []
-    labels = []
-    colors = []
-    for a in approaches:
-        vals = df.loc[df["approach"] == a, "total_cost_usd"].dropna()
-        if not vals.empty:
-            data.append(vals.values)
-            labels.append(APPROACH_LABELS.get(a, a))
-            colors.append(APPROACH_COLORS[a])
-
-    if not data:
-        print("  Skipping cost_distribution: no data after filtering")
-        return
-
-    bp = ax.boxplot(data, tick_labels=labels, patch_artist=True, widths=0.6)
-    for patch, c in zip(bp["boxes"], colors):
-        patch.set_facecolor(c)
-        patch.set_alpha(0.7)
-    for median in bp["medians"]:
-        median.set_color("black")
-        median.set_linewidth(2)
-
-    for i, (vals, c) in enumerate(zip(data, colors)):
-        jitter = np.random.normal(0, 0.04, size=len(vals))
-        ax.scatter(np.full(len(vals), i + 1) + jitter, vals,
-                   alpha=0.3, s=20, color=c, zorder=3)
-
-    # Add median labels
-    for i, vals in enumerate(data):
-        med = np.median(vals)
-        ax.annotate(f"${med:.2f}", xy=(i + 1, med), xytext=(i + 1.3, med),
-                    fontsize=11, color="black", fontweight="bold", va="center")
-
-    ax.set_ylabel("Cost per run (USD)", fontsize=18, fontweight="bold")
-    apply_style(ax)
-    plt.tight_layout()
-    save_figure(fig, output_dir, "cost_distribution")
-
-
-def plot_token_usage(df_runs: pd.DataFrame, output_dir: Path):
-    """Distribution of input and output tokens (approaches with token data only)."""
-    df = df_runs[df_runs["total_tokens"] > 0].copy()
-    if df.empty:
-        print("  Skipping token_usage: no token data")
-        return
-
-    approaches = [a for a in APPROACH_ORDER if a in df["approach"].values]
-    fig, axes = plt.subplots(1, 2, figsize=(14, 6))
-
-    for ax, col, label in zip(axes, ["prompt_tokens", "completion_tokens"],
-                               ["Input Tokens", "Output Tokens"]):
-        data = []
-        labels = []
-        colors = []
-        for a in approaches:
-            vals = df.loc[df["approach"] == a, col].dropna()
-            if not vals.empty:
-                data.append(vals.values / 1000)  # in thousands
-                labels.append(APPROACH_LABELS.get(a, a))
-                colors.append(APPROACH_COLORS[a])
-
-        if not data:
-            ax.set_visible(False)
-            continue
-
-        bp = ax.boxplot(data, tick_labels=labels, patch_artist=True, widths=0.6)
-        for patch, c in zip(bp["boxes"], colors):
-            patch.set_facecolor(c)
-            patch.set_alpha(0.7)
-        for median in bp["medians"]:
-            median.set_color("black")
-            median.set_linewidth(2)
-
-        for i, (vals, c) in enumerate(zip(data, colors)):
-            jitter = np.random.normal(0, 0.04, size=len(vals))
-            ax.scatter(np.full(len(vals), i + 1) + jitter, vals,
-                       alpha=0.3, s=15, color=c, zorder=3)
-
-        ax.set_ylabel(f"{label} (thousands)", fontsize=18, fontweight="bold")
-        ax.tick_params(labelsize=12)
-        apply_style(ax)
-
-    plt.tight_layout()
-    save_figure(fig, output_dir, "token_usage")
-
-
-def plot_duration_distribution(df_runs: pd.DataFrame, output_dir: Path):
-    """Distribution of run duration by approach (non-skipped runs only)."""
-    df = df_runs[df_runs["duration_seconds"].notna() & (df_runs["duration_seconds"] > 0)].copy()
-    if df.empty:
-        print("  Skipping duration_distribution: no duration data")
-        return
-
-    approaches = [a for a in APPROACH_ORDER if a in df["approach"].values]
-    fig, ax = plt.subplots(figsize=(10, 6))
-
-    data = []
-    labels = []
-    colors = []
-    for a in approaches:
-        vals = df.loc[df["approach"] == a, "duration_seconds"].dropna() / 60  # minutes
-        if not vals.empty:
-            data.append(vals.values)
-            labels.append(APPROACH_LABELS.get(a, a))
-            colors.append(APPROACH_COLORS[a])
-
-    bp = ax.boxplot(data, tick_labels=labels, patch_artist=True, widths=0.6)
-    for patch, c in zip(bp["boxes"], colors):
-        patch.set_facecolor(c)
-        patch.set_alpha(0.7)
-    for median in bp["medians"]:
-        median.set_color("black")
-        median.set_linewidth(2)
-
-    # Overlay individual points
-    for i, (vals, c) in enumerate(zip(data, colors)):
-        jitter = np.random.normal(0, 0.04, size=len(vals))
-        ax.scatter(np.full(len(vals), i + 1) + jitter, vals,
-                   alpha=0.3, s=20, color=c, zorder=3)
-
-    # Add median labels
-    for i, vals in enumerate(data):
-        med = np.median(vals)
-        ax.annotate(f"{med:.0f}m", xy=(i + 1, med), xytext=(i + 1.3, med),
-                    fontsize=11, color="black", fontweight="bold", va="center")
-
-    ax.set_ylabel("Duration (minutes)", fontsize=18, fontweight="bold")
-    apply_style(ax)
-    plt.tight_layout()
-    save_figure(fig, output_dir, "duration_distribution")
-
-
-def plot_n_datasets_vs_grade(df_runs: pd.DataFrame, output_dir: Path):
-    """Box plot of grade by binned dataset count."""
-    df = df_runs[df_runs["n_datasets"] > 0].copy()
-    if df.empty:
-        print("  Skipping n_datasets_vs_grade: no data")
-        return
-
-    bins = [0, 3, 10, 30, 100, float("inf")]
-    labels = ["1-3", "4-10", "11-30", "31-100", "100+"]
-    df["dataset_bin"] = pd.cut(df["n_datasets"], bins=bins, labels=labels, right=True)
-
-    fig, ax = plt.subplots(figsize=(10, 6))
-    order = [l for l in labels if l in df["dataset_bin"].cat.categories]
-    sns.boxplot(data=df, x="dataset_bin", y="overall_grade_num", order=order,
-                hue="approach", hue_order=APPROACH_ORDER,
-                palette=APPROACH_COLORS, ax=ax, fliersize=3)
-    ax.set_xlabel("Number of Data Files", fontsize=18, fontweight="bold")
-    ax.set_ylabel("Overall Grade", fontsize=18, fontweight="bold")
-    ax.set_yticks(range(6))
-    ax.set_yticklabels(GRADE_ORDER[::-1])
-    ax.legend(fontsize=12, title="Approach")
-    apply_style(ax)
-    plt.tight_layout()
-    save_figure(fig, output_dir, "n_datasets_vs_grade")
+def generate_overview_csv(df_runs: pd.DataFrame, df_items: pd.DataFrame, output_dir: Path, subdir: str = ""):
+    rows = []
+    for approach_model, grp in df_runs.groupby("approach", observed=True):
+        approach_raw = grp["approach_raw"].iloc[0]
+        model_val = grp["model"].iloc[0]
+        n_papers = grp["paper_slug"].nunique()
+        n_papers_with_templates = (grp["n_table_templates"] > 0).sum()
+        n_table_templates_total = grp["n_table_templates"].sum()
+        n_runs_with_py = (grp["n_py_files"] > 0).sum()
+        n_table_jsons_total = grp["n_table_jsons"].sum()
+        items = df_items[df_items["approach"] == approach_model]
+        table_items = items[items["item_type"] == "table"]
+        n_tables_total = len(table_items)
+        n_tables_f = (table_items["grade"] == "F").sum()
+        n_tables_non_f = n_tables_total - n_tables_f
+        rows.append({
+            "approach": approach_raw, "model": model_val,
+            "n_papers": int(n_papers),
+            "n_papers_with_table_templates": int(n_papers_with_templates),
+            "n_table_templates_total": int(n_table_templates_total),
+            "n_runs_with_py_files": int(n_runs_with_py),
+            "n_table_jsons_produced": int(n_table_jsons_total),
+            "n_tables_in_verification": int(n_tables_total),
+            "n_tables_non_f": int(n_tables_non_f),
+            "n_tables_f": int(n_tables_f),
+        })
+    overview = pd.DataFrame(rows)
+    target = output_dir / subdir if subdir else output_dir
+    target.mkdir(parents=True, exist_ok=True)
+    overview.to_csv(target / "overview_by_approach_model.csv", index=False)
+    print("  Saved overview_by_approach_model.csv")
+    print(overview.to_string(index=False))
 
 
 # ============================================================================
-# Section 3: Explainer Analysis
+# Section: Paper Level
 # ============================================================================
 
-def plot_fault_attribution(df_items: pd.DataFrame, output_dir: Path):
-    """Stacked bar of fault attribution by approach.
-
-    NOTE: The current explainer pipeline sets all attributions to 'unclear'.
-    This plot will become useful once the explainer is improved to produce
-    real attributions. For now, we derive a proxy from the discrepancy
-    descriptions by keyword matching.
-    """
-    df = df_items[df_items["description_of_discrepancy"].str.len() > 0].copy()
-    if df.empty:
-        print("  Skipping fault_attribution: no discrepancy descriptions")
-        return
-
-    # Derive proxy attribution from discrepancy text
-    def classify_discrepancy(text):
-        text = text.lower()
-        if any(k in text for k in ["cli exit_code", "did not produce", "no output", "crash", "timeout", "failed to run"]):
-            return "execution_failure"
-        if any(k in text for k in ["scale mismatch", "scale factor", "percentage vs decimal", "units"]):
-            return "scale_mismatch"
-        if any(k in text for k in ["missing row", "missing col", "missing panel", "not found in replicated"]):
-            return "missing_output"
-        if any(k in text for k in ["sign mismatch", "opposite sign", "different sign"]):
-            return "sign_difference"
-        if any(k in text for k in ["within 5%", "within 2%", "small difference", "close match"]):
-            return "minor_difference"
-        return "other_discrepancy"
-
-    df["proxy_attribution"] = df["description_of_discrepancy"].apply(classify_discrepancy)
-
-    ct = pd.crosstab(df["approach"], df["proxy_attribution"], normalize="index") * 100
-    attr_order = ["execution_failure", "missing_output", "sign_difference", "scale_mismatch",
-                   "minor_difference", "other_discrepancy"]
-    ct = ct.reindex(columns=[c for c in attr_order if c in ct.columns], fill_value=0)
-    attr_colors = {
-        "execution_failure": "#e74c3c",
-        "missing_output": "#e67e22",
-        "sign_difference": "#9b59b6",
-        "scale_mismatch": "#f39c12",
-        "minor_difference": "#2ecc71",
-        "other_discrepancy": "#95a5a6",
-    }
+def plot_overall_grade_distribution(df_runs: pd.DataFrame, output_dir: Path, subdir: str = ""):
+    """Grouped bar chart of overall grades by approach (excludes F)."""
+    df = df_runs[df_runs["overall_grade"] != "F"]
+    grades_shown = [g for g in GRADE_ORDER if g != "F"]
+    ct = pd.crosstab(df["approach"], df["overall_grade"], normalize="index") * 100
+    ct = ct.reindex(columns=grades_shown, fill_value=0)
 
     fig, ax = plt.subplots(figsize=(12, 6))
-    ct.loc[[a for a in APPROACH_ORDER if a in ct.index]].plot(
-        kind="bar", stacked=True, ax=ax,
-        color=[attr_colors.get(c, "#bdc3c7") for c in ct.columns],
-        edgecolor="white", width=0.7
-    )
-    ax.set_xticklabels([APPROACH_LABELS.get(a, a) for a in APPROACH_ORDER if a in ct.index], rotation=0)
-    ax.set_ylabel("Share (%)", fontsize=18, fontweight="bold")
-    ax.legend(fontsize=12, title="Discrepancy Type", loc="upper right")
+    present = _approaches_in(df)
+    x = np.arange(len(present))
+    width = 0.15
+    for i, grade in enumerate(grades_shown):
+        vals = [ct.loc[a, grade] if a in ct.index else 0 for a in present]
+        ax.bar(x + i * width, vals, width, label=grade, color=GRADE_COLORS[grade], edgecolor="white")
+
+    ax.set_xticks(x + width * 2)
+    ax.set_xticklabels([APPROACH_LABELS.get(a, a).replace("\n", " ") for a in present], fontsize=10, rotation=25, ha="right")
+    ax.set_ylabel("Share of runs (%)", fontsize=18, fontweight="bold")
+    ax.legend(fontsize=14, ncol=6, loc="upper right")
     apply_style(ax)
     plt.tight_layout()
-    save_figure(fig, output_dir, "fault_attribution")
+    save_figure(fig, output_dir, "overall_grades", subdir)
 
 
-def plot_likely_causes_frequency(df_items: pd.DataFrame, output_dir: Path):
-    """Extract key terms from discrepancy descriptions and show frequency."""
-    df = df_items[df_items["description_of_discrepancy"].str.len() > 10].copy()
-    if df.empty:
-        print("  Skipping likely_causes_replicator: no discrepancy data")
-        return
-
-    # Define meaningful term categories to search for in descriptions
-    term_categories = {
-        "scale/unit mismatch": r"scale[ _](?:factor|mismatch)|percentage|decimal|units?\b",
-        "sign mismatch": r"sign[ _]mismatch|opposite sign|different sign|sign_match.*false",
-        "missing rows/columns": r"missing (?:row|col|panel|variable)",
-        "CLI/execution failure": r"cli exit_code|did not produce|crash|failed to (?:run|execute)",
-        "row/column alignment": r"row(?:s)? (?:matched|aligned)|column(?:s)? (?:matched|aligned)",
-        "standard error mismatch": r"(?:standard error|se |s\.e\.).*(?:mismatch|differ)",
-        "panel structure issue": r"panel [a-z]|two.panel|multi.panel",
-        "R-squared difference": r"r.squared|r²|r-squared",
-        "sample size difference": r"(?:sample size|observations|n =).*differ",
-        "coefficient difference": r"coefficient.*differ|different (?:coefficient|estimate)",
-        "large % difference": r"(?:\d{2,3})% difference|>(?:20|50)%",
-        "small % difference": r"within (?:2|5)%|<(?:5|10)%",
-        "duplicate/identical values": r"identical values|duplicate|same values",
-        "data processing difference": r"(?:data processing|cleaning|filtering).*differ",
-        "regression specification": r"(?:specification|regression|model).*differ|different (?:model|spec)",
-        "figure comparison": r"figure|plot|graph|visual",
-        "timeout/incomplete": r"timeout|timed out|incomplete",
-    }
-
-    all_texts = " ".join(df["description_of_discrepancy"].str.lower())
-    counts = {}
-    for label, pattern in term_categories.items():
-        n = len(re.findall(pattern, all_texts))
-        if n > 0:
-            counts[label] = n
-
-    if not counts:
-        print("  Skipping likely_causes_replicator: no term matches")
-        return
-
-    sorted_counts = sorted(counts.items(), key=lambda x: x[1], reverse=True)
-    labels, values = zip(*sorted_counts)
-
-    fig, ax = plt.subplots(figsize=(12, max(6, len(labels) * 0.4)))
-    y_pos = np.arange(len(labels))
-    ax.barh(y_pos, values, color="#e74c3c", alpha=0.8, edgecolor="white")
-    ax.set_yticks(y_pos)
-    ax.set_yticklabels(labels, fontsize=12)
-    ax.invert_yaxis()
-    ax.set_xlabel("Frequency in discrepancy descriptions", fontsize=18, fontweight="bold")
-    apply_style(ax)
-    plt.tight_layout()
-    save_figure(fig, output_dir, "likely_causes_replicator")
-
-
-def plot_no_code_analysis(df_runs: pd.DataFrame, output_dir: Path):
-    """Analyze why some runs produced no code."""
-    no_code = df_runs[df_runs["n_code_files"] == 0].copy()
-    if no_code.empty:
-        print("  Skipping no_code_analysis: all runs produced code")
-        return
-
-    # Categorize by duration
-    def categorize_failure(row):
-        dur = row.get("duration_seconds") or 0
-        if dur == 0:
-            return "Runner crash (0s)"
-        elif dur < 30:
-            return "Quick failure (<30s)"
-        elif dur < 300:
-            return "Early exit (<5min)"
-        else:
-            return "Ran but no output"
-
-    no_code["failure_type"] = no_code.apply(categorize_failure, axis=1)
-
-    fig, axes = plt.subplots(1, 2, figsize=(14, 6))
-
-    # Left: count by approach
-    ax = axes[0]
-    ct = pd.crosstab(no_code["approach"], no_code["failure_type"])
-    type_order = ["Runner crash (0s)", "Quick failure (<30s)", "Early exit (<5min)", "Ran but no output"]
-    ct = ct.reindex(columns=[c for c in type_order if c in ct.columns], fill_value=0)
-    type_colors = {"Runner crash (0s)": "#2c3e50", "Quick failure (<30s)": "#e74c3c",
-                   "Early exit (<5min)": "#e67e22", "Ran but no output": "#f39c12"}
-    ct.loc[[a for a in APPROACH_ORDER if a in ct.index]].plot(
-        kind="bar", stacked=True, ax=ax,
-        color=[type_colors.get(c, "#95a5a6") for c in ct.columns],
-        edgecolor="white", width=0.7
-    )
-    ax.set_xticklabels([APPROACH_LABELS.get(a, a) for a in APPROACH_ORDER if a in ct.index], rotation=0)
-    ax.set_ylabel("Number of no-code runs", fontsize=18, fontweight="bold")
-    ax.legend(fontsize=11, title="Failure Type")
-    apply_style(ax)
-
-    # Right: total runs vs no-code runs by approach
-    ax2 = axes[1]
-    total_by_approach = df_runs.groupby("approach").size()
-    nocode_by_approach = no_code.groupby("approach").size()
-    x = np.arange(len(APPROACH_ORDER))
-    width = 0.35
-    totals = [total_by_approach.get(a, 0) for a in APPROACH_ORDER]
-    nocodes = [nocode_by_approach.get(a, 0) for a in APPROACH_ORDER]
-    ax2.bar(x - width/2, totals, width, label="Total runs", color="#3498db", alpha=0.7, edgecolor="white")
-    ax2.bar(x + width/2, nocodes, width, label="No code produced", color="#e74c3c", alpha=0.7, edgecolor="white")
-    ax2.set_xticks(x)
-    ax2.set_xticklabels([APPROACH_LABELS[a] for a in APPROACH_ORDER], rotation=0)
-    ax2.set_ylabel("Count", fontsize=18, fontweight="bold")
-    ax2.legend(fontsize=14)
-    # Add % labels
-    for i, (t, nc) in enumerate(zip(totals, nocodes)):
-        if t > 0:
-            ax2.text(i + width/2, nc + 0.3, f"{nc/t*100:.0f}%", ha="center", fontsize=12, fontweight="bold")
-    apply_style(ax2)
-
-    plt.tight_layout()
-    save_figure(fig, output_dir, "no_code_analysis")
-
-
-# ============================================================================
-# Section 4: Additional Analyses
-# ============================================================================
-
-def plot_agreement_matrix(df_items: pd.DataFrame, output_dir: Path):
-    """Heatmap: pairwise grade agreement rate between approaches."""
-    # Build pivot with plain float values (not categorical)
+def plot_agreement_matrix(df_items: pd.DataFrame, output_dir: Path, subdir: str = ""):
     deduped = df_items.drop_duplicates(subset=["paper_slug", "item_id", "approach"])
     pivot_data = deduped[["paper_slug", "item_id", "approach", "grade_num"]].copy()
     pivot_data["approach"] = pivot_data["approach"].astype(str)
-    pivot = pivot_data.pivot_table(index=["paper_slug", "item_id"], columns="approach",
-                                   values="grade_num", aggfunc="first")
-    approaches = [a for a in APPROACH_ORDER if a in pivot.columns]
+    pivot = pivot_data.pivot_table(index=["paper_slug", "item_id"], columns="approach", values="grade_num", aggfunc="first")
+    approaches = _approaches_in(df_items)
+    approaches = [a for a in approaches if a in pivot.columns]
     if len(approaches) < 2:
-        print("  Skipping agreement_matrix: need >= 2 approaches")
         return
 
     n = len(approaches)
     agreement = np.zeros((n, n))
     within_one = np.zeros((n, n))
-
     for i in range(n):
         for j in range(n):
             a_vals = pivot[approaches[i]].values
@@ -1315,93 +945,40 @@ def plot_agreement_matrix(df_items: pd.DataFrame, output_dir: Path):
             mask = ~(np.isnan(a_vals) | np.isnan(b_vals))
             if mask.sum() == 0:
                 continue
-            a_clean = a_vals[mask]
-            b_clean = b_vals[mask]
-            agreement[i, j] = np.mean(a_clean == b_clean) * 100
-            within_one[i, j] = np.mean(np.abs(a_clean - b_clean) <= 1) * 100
+            agreement[i, j] = np.mean(a_vals[mask] == b_vals[mask]) * 100
+            within_one[i, j] = np.mean(np.abs(a_vals[mask] - b_vals[mask]) <= 1) * 100
 
     fig, axes = plt.subplots(1, 2, figsize=(14, 5.5))
-    labels = [APPROACH_LABELS[a] for a in approaches]
-
+    labels = [APPROACH_LABELS.get(a, a).replace("\n", " ") for a in approaches]
     for ax, data, subtitle in zip(axes, [agreement, within_one], ["Exact Match (%)", "Within 1 Grade (%)"]):
         sns.heatmap(data, annot=True, fmt=".0f", xticklabels=labels, yticklabels=labels,
-                    cmap="YlGn", vmin=0, vmax=100, ax=ax, square=True,
-                    cbar_kws={"shrink": 0.8})
+                    cmap="YlGn", vmin=0, vmax=100, ax=ax, square=True, cbar_kws={"shrink": 0.8})
         ax.set_xlabel(subtitle, fontsize=16, fontweight="bold")
-        ax.tick_params(labelsize=12)
-
+        ax.tick_params(labelsize=10)
     plt.tight_layout()
-    save_figure(fig, output_dir, "agreement_matrix")
+    save_figure(fig, output_dir, "agreement_matrix", subdir)
 
 
-def plot_best_of_k(df_runs: pd.DataFrame, output_dir: Path):
-    """Best grade per paper for k=1..4 approaches."""
-    approaches = [a for a in APPROACH_ORDER if a in df_runs["approach"].values]
-    if not approaches:
-        return
-
-    fig, ax = plt.subplots(figsize=(10, 6))
-    x = np.arange(len(GRADE_ORDER))
-    width = 0.18
-
-    # Individual approaches
-    for i, approach in enumerate(approaches):
-        sub = df_runs[df_runs["approach"] == approach]
-        dist = sub["overall_grade"].value_counts(normalize=True).reindex(GRADE_ORDER, fill_value=0) * 100
-        ax.bar(x + i * width, dist.values, width, label=APPROACH_LABELS[approach],
-               color=APPROACH_COLORS[approach], alpha=0.5, edgecolor="white")
-
-    # Best-of-all
-    best = df_runs.groupby("paper_slug")["overall_grade_num"].max().map(
-        lambda v: NUM_TO_GRADE.get(int(v), "F") if pd.notna(v) else "F"
-    )
-    best_dist = best.value_counts(normalize=True).reindex(GRADE_ORDER, fill_value=0) * 100
-    ax.bar(x + len(approaches) * width, best_dist.values, width, label="Best of All",
-           color="#2c3e50", edgecolor="white")
-
-    ax.set_xticks(x + width * len(approaches) / 2)
-    ax.set_xticklabels(GRADE_ORDER)
-    ax.set_xlabel("Grade", fontsize=18, fontweight="bold")
-    ax.set_ylabel("Share of papers (%)", fontsize=18, fontweight="bold")
-    ax.legend(fontsize=12)
-    apply_style(ax)
-    plt.tight_layout()
-    save_figure(fig, output_dir, "best_of_k")
-
-
-def plot_paper_difficulty(df_runs: pd.DataFrame, output_dir: Path):
-    """Horizontal bar: papers ranked by mean grade across approaches, with grade range."""
-    # Compute mean, min, max grade per paper
-    agg = df_runs.groupby(["paper_slug", "paper_title"])["overall_grade_num"].agg(["mean", "min", "max"])
+def plot_paper_difficulty(df_runs: pd.DataFrame, output_dir: Path, subdir: str = "", exclude_f: bool = False):
+    df = df_runs if not exclude_f else df_runs[df_runs["overall_grade"] != "F"]
+    agg = df.groupby(["paper_slug", "paper_title"])["overall_grade_num"].agg(["mean", "min", "max"])
     agg = agg.sort_values("mean", ascending=True)
-
     if len(agg) > 40:
-        hardest = agg.head(20)
-        easiest = agg.tail(20)
-        agg = pd.concat([hardest, easiest])
-
-    # Build labels: "JOURNAL — Title" (truncated)
+        agg = pd.concat([agg.head(20), agg.tail(20)])
     labels = []
     for slug, title in agg.index:
         journal = _infer_journal(slug)
         display = title[:45] if title != slug else slug
-        if journal != "Other":
-            labels.append(f"{journal} — {display}")
-        else:
-            labels.append(display)
+        labels.append(f"{journal} — {display}" if journal != "Other" else display)
 
     fig, ax = plt.subplots(figsize=(12, max(8, len(agg) * 0.35)))
     y_pos = range(len(agg))
     colors = [GRADE_COLORS.get(NUM_TO_GRADE.get(round(v), "F"), "#95a5a6") for v in agg["mean"].values]
-
-    # Draw mean bars
     ax.barh(y_pos, agg["mean"].values, color=colors, edgecolor="white", alpha=0.8)
-    # Draw grade range (min-max) as horizontal error bars
     xerr_low = agg["mean"].values - agg["min"].values
     xerr_high = agg["max"].values - agg["mean"].values
     ax.errorbar(agg["mean"].values, y_pos, xerr=[xerr_low, xerr_high],
                 fmt="none", ecolor="black", elinewidth=1.2, capsize=3, capthick=1.0)
-
     ax.set_yticks(list(y_pos))
     ax.set_yticklabels(labels, fontsize=10)
     ax.set_xticks(range(6))
@@ -1409,227 +986,575 @@ def plot_paper_difficulty(df_runs: pd.DataFrame, output_dir: Path):
     ax.set_xlabel("Mean Grade (across approaches)", fontsize=18, fontweight="bold")
     apply_style(ax)
     plt.tight_layout()
-    save_figure(fig, output_dir, "paper_difficulty")
+    save_figure(fig, output_dir, "paper_difficulty", subdir)
 
 
-def plot_pairwise_dominance(df_runs: pd.DataFrame, output_dir: Path):
-    """Heatmap: approach A beats B on X% of papers."""
-    pivot_data = df_runs[["paper_slug", "approach", "overall_grade_num"]].copy()
-    pivot_data["approach"] = pivot_data["approach"].astype(str)
-    pivot = pivot_data.pivot_table(index="paper_slug", columns="approach",
-                                   values="overall_grade_num", aggfunc="first")
-    approaches = [a for a in APPROACH_ORDER if a in pivot.columns]
-    if len(approaches) < 2:
+def plot_scatter_vs_grade(df: pd.DataFrame, x_col: str, x_label: str, output_dir: Path,
+                          name: str, log_x: bool = False, grade_col: str = "overall_grade_num",
+                          subdir: str = "", exclude_f: bool = False):
+    df_plot = df.dropna(subset=[x_col, grade_col]).copy()
+    if exclude_f:
+        grade_str_col = "overall_grade" if grade_col == "overall_grade_num" else "grade"
+        if grade_str_col in df_plot.columns:
+            df_plot = df_plot[df_plot[grade_str_col] != "F"]
+    if df_plot.empty:
         return
 
-    n = len(approaches)
-    wins = np.zeros((n, n))
+    fig, ax = plt.subplots(figsize=(10, 7))
+    for approach in _approaches_in(df_plot):
+        sub = df_plot[df_plot["approach"] == approach]
+        if sub.empty:
+            continue
+        ax.scatter(sub[x_col], sub[grade_col] + np.random.uniform(-0.15, 0.15, len(sub)),
+                   color=APPROACH_COLORS.get(approach, "#95a5a6"), label=APPROACH_LABELS.get(approach, approach).replace("\n", " "),
+                   alpha=0.6, s=60, edgecolor="white", linewidth=0.5)
 
-    for i in range(n):
-        for j in range(n):
-            if i == j:
-                wins[i, j] = np.nan
-                continue
-            a_vals = pivot[approaches[i]].values
-            b_vals = pivot[approaches[j]].values
-            mask = ~(np.isnan(a_vals) | np.isnan(b_vals))
-            if mask.sum() == 0:
-                continue
-            wins[i, j] = np.mean(a_vals[mask] > b_vals[mask]) * 100
-
-    fig, ax = plt.subplots(figsize=(7, 6))
-    labels = [APPROACH_LABELS[a] for a in approaches]
-    mask = np.eye(n, dtype=bool)
-    sns.heatmap(wins, annot=True, fmt=".0f", xticklabels=labels, yticklabels=labels,
-                cmap="RdYlGn", vmin=0, vmax=100, ax=ax, mask=mask, square=True,
-                cbar_kws={"label": "Win Rate (%)", "shrink": 0.8})
-    ax.set_xlabel("Column approach", fontsize=16, fontweight="bold")
-    ax.set_ylabel("Row approach beats →", fontsize=16, fontweight="bold")
-    ax.tick_params(labelsize=12)
+    if log_x and df_plot[x_col].gt(0).any():
+        ax.set_xscale("log")
+    ax.set_xlabel(x_label, fontsize=18, fontweight="bold")
+    ax.set_ylabel("Overall Grade", fontsize=18, fontweight="bold")
+    grades_shown = [g for g in GRADE_ORDER if g != "F"] if exclude_f else GRADE_ORDER
+    ax.set_yticks([GRADE_TO_NUM[g] for g in grades_shown])
+    ax.set_yticklabels(grades_shown[::-1])
+    ax.legend(fontsize=12)
+    apply_style(ax)
     plt.tight_layout()
-    save_figure(fig, output_dir, "pairwise_dominance")
+    save_figure(fig, output_dir, name, subdir)
 
 
-def plot_grade_by_journal(df_runs: pd.DataFrame, output_dir: Path):
-    """Grade distribution grouped by journal."""
-    ct = pd.crosstab(df_runs["journal"], df_runs["overall_grade"], normalize="index") * 100
-    ct = ct.reindex(columns=GRADE_ORDER, fill_value=0)
-    # Sort by mean grade
-    ct["_mean"] = sum(ct[g] * GRADE_TO_NUM[g] for g in GRADE_ORDER if g in ct.columns) / 100
-    ct = ct.sort_values("_mean", ascending=False)
-    ct = ct.drop(columns="_mean")
+def plot_grade_by_discipline(df_runs: pd.DataFrame, output_dir: Path, subdir: str = ""):
+    df = df_runs[df_runs["overall_grade"] != "F"]
+    grades_shown = [g for g in GRADE_ORDER if g != "F"]
+    ct = pd.crosstab(df["discipline"], df["overall_grade"], normalize="index") * 100
+    ct = ct.reindex(columns=grades_shown, fill_value=0)
+    ct["_mean"] = sum(ct[g] * GRADE_TO_NUM[g] for g in grades_shown if g in ct.columns) / 100
+    ct = ct.sort_values("_mean", ascending=False).drop(columns="_mean")
 
-    fig, ax = plt.subplots(figsize=(12, 6))
-    ct.plot(kind="bar", stacked=True, ax=ax,
-            color=[GRADE_COLORS[g] for g in ct.columns], edgecolor="white", width=0.7)
-    ax.set_xlabel("Journal", fontsize=18, fontweight="bold")
+    fig, ax = plt.subplots(figsize=(10, 6))
+    ct.plot(kind="bar", stacked=True, ax=ax, color=[GRADE_COLORS[g] for g in ct.columns], edgecolor="white", width=0.7)
+    ax.set_xlabel("Discipline", fontsize=18, fontweight="bold")
     ax.set_ylabel("Share (%)", fontsize=18, fontweight="bold")
-    ax.set_xticklabels(ax.get_xticklabels(), rotation=45, ha="right")
+    ax.set_xticklabels(ax.get_xticklabels(), rotation=0)
     ax.legend(fontsize=12, ncol=6, loc="upper right")
     apply_style(ax)
     plt.tight_layout()
-    save_figure(fig, output_dir, "grade_by_journal")
+    save_figure(fig, output_dir, "grade_by_discipline", subdir)
 
 
-def plot_cumulative_success(df_items: pd.DataFrame, output_dir: Path):
-    """Fraction of items graded A or B as items accumulate in order."""
-    df = df_items[df_items["item_number"].notna()].copy()
+def plot_grade_by_language(df_runs: pd.DataFrame, output_dir: Path, subdir: str = ""):
+    df = df_runs[(df_runs["overall_grade"] != "F") & (df_runs["original_language"] != "Unknown")]
+    grades_shown = [g for g in GRADE_ORDER if g != "F"]
+    if df.empty:
+        return
+
+    fig, axes = plt.subplots(1, 2, figsize=(18, 6))
+
+    # Left: primary language
+    ax = axes[0]
+    ct = pd.crosstab(df["original_language"], df["overall_grade"], normalize="index") * 100
+    ct = ct.reindex(columns=grades_shown, fill_value=0)
+    ct["_mean"] = sum(ct[g] * GRADE_TO_NUM[g] for g in grades_shown if g in ct.columns) / 100
+    ct = ct.sort_values("_mean", ascending=False).drop(columns="_mean")
+    lang_counts = df.drop_duplicates("paper_slug").groupby("original_language").size()
+    ct.index = [f"{lang} (n={lang_counts.get(lang, 0)})" for lang in ct.index]
+    ct.plot(kind="bar", stacked=True, ax=ax, color=[GRADE_COLORS[g] for g in ct.columns], edgecolor="white", width=0.7)
+    ax.set_xlabel("Primary Language", fontsize=16, fontweight="bold")
+    ax.set_ylabel("Share (%)", fontsize=18, fontweight="bold")
+    ax.set_xticklabels(ax.get_xticklabels(), rotation=0)
+    ax.legend(fontsize=11, ncol=5, loc="upper right")
+    apply_style(ax)
+
+    # Right: full language combo
+    ax2 = axes[1]
+    ct2 = pd.crosstab(df["original_languages_all"], df["overall_grade"], normalize="index") * 100
+    ct2 = ct2.reindex(columns=grades_shown, fill_value=0)
+    ct2["_mean"] = sum(ct2[g] * GRADE_TO_NUM[g] for g in grades_shown if g in ct2.columns) / 100
+    ct2 = ct2.sort_values("_mean", ascending=False).drop(columns="_mean")
+    combo_counts = df.drop_duplicates("paper_slug").groupby("original_languages_all").size()
+    ct2.index = [f"{combo} (n={combo_counts.get(combo, 0)})" for combo in ct2.index]
+    ct2.plot(kind="bar", stacked=True, ax=ax2, color=[GRADE_COLORS[g] for g in ct2.columns], edgecolor="white", width=0.7)
+    ax2.set_xlabel("Language Combination", fontsize=16, fontweight="bold")
+    ax2.set_ylabel("Share (%)", fontsize=18, fontweight="bold")
+    ax2.set_xticklabels(ax2.get_xticklabels(), rotation=30, ha="right")
+    ax2.legend(fontsize=11, ncol=5, loc="upper right")
+    apply_style(ax2)
+
+    plt.tight_layout()
+    save_figure(fig, output_dir, "grade_by_language", subdir)
+
+
+def plot_duration_vs_grade(df_runs: pd.DataFrame, output_dir: Path, subdir: str = ""):
+    """Left: duration distribution per approach. Right: duration vs grade. Both excl. F."""
+    df = df_runs[df_runs["duration_seconds"].notna() & df_runs["overall_grade_num"].notna() & (df_runs["overall_grade"] != "F")].copy()
+    if df.empty:
+        return
+
+    fig, axes = plt.subplots(1, 2, figsize=(16, 6))
+
+    ax = axes[0]
+    approaches = _approaches_in(df)
+    data, labels, colors = [], [], []
+    for a in approaches:
+        vals = df.loc[df["approach"] == a, "duration_seconds"].dropna() / 60
+        if not vals.empty:
+            data.append(vals.values)
+            labels.append(APPROACH_LABELS.get(a, a).replace("\n", " "))
+            colors.append(APPROACH_COLORS.get(a, "#95a5a6"))
+    if data:
+        bp = ax.boxplot(data, tick_labels=labels, patch_artist=True, widths=0.6, showfliers=False)
+        plt.setp(ax.get_xticklabels(), fontsize=10, rotation=25, ha="right")
+        for patch, c in zip(bp["boxes"], colors):
+            patch.set_facecolor(c)
+            patch.set_alpha(0.7)
+        for median in bp["medians"]:
+            median.set_color("black")
+            median.set_linewidth(2)
+        for i, vals in enumerate(data):
+            med = np.median(vals)
+            ax.annotate(f"{med:.0f}m", xy=(i + 1, med), xytext=(i + 1.3, med),
+                        fontsize=11, color="black", fontweight="bold", va="center")
+    ax.set_ylabel("Duration (minutes)", fontsize=18, fontweight="bold")
+    apply_style(ax)
+
+    ax2 = axes[1]
+    for approach in _approaches_in(df):
+        sub = df[df["approach"] == approach]
+        if sub.empty:
+            continue
+        ax2.scatter(sub["duration_seconds"] / 60, sub["overall_grade_num"] + np.random.uniform(-0.15, 0.15, len(sub)),
+                   color=APPROACH_COLORS.get(approach, "#95a5a6"), label=APPROACH_LABELS.get(approach, approach).replace("\n", " "),
+                   alpha=0.6, s=60, edgecolor="white", linewidth=0.5)
+    ax2.set_xlabel("Duration (minutes)", fontsize=18, fontweight="bold")
+    ax2.set_ylabel("Overall Grade", fontsize=18, fontweight="bold")
+    grades_shown = [g for g in GRADE_ORDER if g != "F"]
+    ax2.set_yticks([GRADE_TO_NUM[g] for g in grades_shown])
+    ax2.set_yticklabels(grades_shown[::-1])
+    ax2.legend(fontsize=12)
+    apply_style(ax2)
+
+    plt.tight_layout()
+    save_figure(fig, output_dir, "duration_vs_grade", subdir)
+
+
+# ============================================================================
+# Section: Item Level — Tables
+# ============================================================================
+
+def plot_item_grade_by_type(df_items: pd.DataFrame, output_dir: Path, item_type: str | None, name: str,
+                            subdir: str = "", exclude_f: bool = True):
+    df = df_items if item_type is None else df_items[df_items["item_type"] == item_type]
+    if exclude_f:
+        df = df[df["grade"] != "F"]
+    grades_shown = [g for g in GRADE_ORDER if g != "F"] if exclude_f else GRADE_ORDER
+    if df.empty:
+        return
+
+    ct = pd.crosstab(df["approach"], df["grade"], normalize="index") * 100
+    ct = ct.reindex(columns=grades_shown, fill_value=0)
+
+    fig, ax = plt.subplots(figsize=(12, 6))
+    present = _approaches_in(df)
+    ct.loc[[a for a in present if a in ct.index]].plot(kind="bar", ax=ax, color=[GRADE_COLORS[g] for g in ct.columns],
+                                edgecolor="white", width=0.8)
+    ax.set_xticklabels([APPROACH_LABELS.get(a, a).replace("\n", " ") for a in present if a in ct.index], fontsize=10, rotation=25, ha="right")
+    ax.set_ylabel("Share of items (%)", fontsize=18, fontweight="bold")
+    ax.legend(fontsize=14, ncol=6, loc="upper right")
+    apply_style(ax)
+    plt.tight_layout()
+    save_figure(fig, output_dir, name, subdir)
+
+
+def plot_item_number_vs_grade(df_items: pd.DataFrame, output_dir: Path, subdir: str = ""):
+    df = df_items[df_items["item_number"].notna() & (df_items["item_type"] == "table") & (df_items["grade"] != "F")].copy()
     df["item_number"] = df["item_number"].astype(int)
-    df = df.sort_values(["paper_slug", "approach", "item_number"])
-
+    df = df[df["item_number"] <= 8]
     if df.empty:
         return
 
     fig, ax = plt.subplots(figsize=(10, 6))
-
-    for approach in APPROACH_ORDER:
-        sub = df[df["approach"] == approach].copy()
-        if sub.empty:
+    for approach in _approaches_in(df):
+        asub = df[df["approach"] == approach]
+        if asub.empty:
             continue
-        sub["is_good"] = sub["grade_num"] >= 4  # A or B
-        # Group by item number position, compute cumulative fraction
-        by_num = sub.groupby("item_number")["is_good"].mean() * 100
-        ax.plot(by_num.index, by_num.values, marker="o",
-                color=APPROACH_COLORS[approach], label=APPROACH_LABELS[approach],
-                linewidth=2, markersize=6)
+        grouped = asub.groupby("item_number")["grade_num"]
+        means = grouped.mean()
+        sems = grouped.sem()
+        ax.errorbar(means.index, means.values, yerr=1.96 * sems.fillna(0).values,
+                    label=APPROACH_LABELS.get(approach, approach).replace("\n", " "),
+                    color=APPROACH_COLORS.get(approach, "#95a5a6"),
+                    marker="o", capsize=3, linewidth=2)
 
-    ax.set_xlabel("Item Number", fontsize=18, fontweight="bold")
-    ax.set_ylabel("% Items Graded A or B", fontsize=18, fontweight="bold")
-    ax.legend(fontsize=14)
+    ax.set_xlabel("Table Number", fontsize=18, fontweight="bold")
+    ax.set_ylabel("Mean Grade", fontsize=18, fontweight="bold")
+    ax.set_yticks(range(6))
+    ax.set_yticklabels(GRADE_ORDER[::-1])
+    ax.legend(fontsize=12, loc="lower left")
     apply_style(ax)
     plt.tight_layout()
-    save_figure(fig, output_dir, "cumulative_success")
+    save_figure(fig, output_dir, "item_number_vs_grade", subdir)
 
 
 # ============================================================================
-# Summary Table
+# Section: Cell Level
 # ============================================================================
 
-def generate_summary_table(df_runs: pd.DataFrame, df_items: pd.DataFrame, output_dir: Path):
-    """Generate summary table as CSV and LaTeX."""
-    rows = []
-    for approach in APPROACH_ORDER:
-        sub = df_runs[df_runs["approach"] == approach]
-        items = df_items[df_items["approach"] == approach]
+def plot_coefficient_se_scaled(df_cells: pd.DataFrame, output_dir: Path, subdir: str = ""):
+    df = df_cells[
+        (df_cells["row_type"] == "coefficient") &
+        df_cells["original_value"].notna() &
+        df_cells["replicated_value"].notna() &
+        df_cells["is_numeric"] &
+        (df_cells["item_grade"] != "F")
+    ].copy()
+    if df.empty:
+        return
+
+    df["abs_diff"] = (df["original_value"].astype(float) - df["replicated_value"].astype(float)).abs()
+    # Use percent_difference as proxy for SE-scaled when SE not available
+    # For now just use abs_diff / original as approximation
+    # Check if we have actual SE data
+    has_se = False
+    if "original_se" in df.columns:
+        df["se"] = df["original_se"]
+        if "replicated_se" in df.columns:
+            mask_no_orig = df["se"].isna()
+            df.loc[mask_no_orig, "se"] = df.loc[mask_no_orig, "replicated_se"]
+        df_se = df[df["se"].notna() & (df["se"].astype(float) > 0)].copy()
+        if not df_se.empty:
+            has_se = True
+            df = df_se
+            df["diff_over_se"] = df["abs_diff"] / df["se"].astype(float)
+            df["diff_over_se_capped"] = df["diff_over_se"].clip(upper=10)
+
+    if not has_se:
+        # Fallback: use percent_difference
+        df = df[df["percent_difference"].notna()].copy()
+        if df.empty:
+            return
+        df["diff_over_se"] = df["percent_difference"]
+        df["diff_over_se_capped"] = df["percent_difference"].clip(upper=200)
+
+    approaches = _approaches_in(df)
+    fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+
+    # Left: boxplot by approach (no outlier dots)
+    ax = axes[0]
+    data, labels, colors = [], [], []
+    for a in approaches:
+        vals = df.loc[df["approach"] == a, "diff_over_se_capped"].values
+        if len(vals) > 0:
+            data.append(vals)
+            labels.append(APPROACH_LABELS.get(a, a).replace("\n", " "))
+            colors.append(APPROACH_COLORS.get(a, "#95a5a6"))
+
+    if data:
+        bp = ax.boxplot(data, tick_labels=labels, patch_artist=True, widths=0.6, showfliers=False)
+        plt.setp(ax.get_xticklabels(), fontsize=10, rotation=25, ha="right")
+        for patch, c in zip(bp["boxes"], colors):
+            patch.set_facecolor(c)
+            patch.set_alpha(0.7)
+        for median in bp["medians"]:
+            median.set_color("black")
+            median.set_linewidth(2)
+        for i, vals in enumerate(data):
+            med = np.median(vals)
+            ax.annotate(f"{med:.2f}", xy=(i + 1, med), xytext=(i + 1.3, med),
+                        fontsize=11, color="black", fontweight="bold", va="center")
+    ax.set_ylabel("|Coeff. difference| / SE (capped at 10)", fontsize=14, fontweight="bold")
+    ax.axhline(y=1.96, color="red", linestyle="--", alpha=0.5, label="1.96 (95% CI)")
+    ax.legend(fontsize=12)
+    apply_style(ax)
+
+    # Right: cumulative distribution per approach
+    ax2 = axes[1]
+    for a in approaches:
+        vals = df.loc[df["approach"] == a, "diff_over_se"].sort_values().values
+        if len(vals) == 0:
+            continue
+        cdf_y = np.arange(1, len(vals) + 1) / len(vals) * 100
+        ax2.plot(vals, cdf_y, label=APPROACH_LABELS.get(a, a).replace("\n", " "),
+                 color=APPROACH_COLORS.get(a, "#95a5a6"), linewidth=2)
+    ax2.set_xlim(0, 10)
+    ax2.axvline(x=1.96, color="red", linestyle="--", alpha=0.5, label="1.96")
+    ax2.set_xlabel("|Coeff. difference| / SE", fontsize=14, fontweight="bold")
+    ax2.set_ylabel("Cumulative share of coefficients (%)", fontsize=14, fontweight="bold")
+    ax2.legend(fontsize=9)
+    apply_style(ax2)
+
+    plt.tight_layout()
+    save_figure(fig, output_dir, "coefficient_se_scaled", subdir)
+
+
+def plot_same_significance(df_cells: pd.DataFrame, output_dir: Path, subdir: str = ""):
+    df = df_cells[
+        (df_cells["row_type"] == "coefficient") &
+        df_cells["significance_stars_orig"].notna() &
+        df_cells["significance_stars_repl"].notna() &
+        (df_cells["item_grade"] != "F")
+    ].copy()
+    if df.empty:
+        return
+
+    df["sig_match"] = df["significance_stars_orig"] == df["significance_stars_repl"]
+    approaches = _approaches_in(df)
+
+    fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+
+    ax = axes[0]
+    match_rates, xlabels, colors = [], [], []
+    for a in approaches:
+        sub = df[df["approach"] == a]
         if sub.empty:
             continue
+        match_rates.append(sub["sig_match"].mean() * 100)
+        xlabels.append(APPROACH_LABELS.get(a, a).replace("\n", " "))
+        colors.append(APPROACH_COLORS.get(a, "#95a5a6"))
 
-        n = len(sub)
-        mean_grade = sub["overall_grade_num"].mean()
-        pct_ab = ((sub["overall_grade"].isin(["A", "B"])).sum() / n * 100) if n else 0
-        pct_f = ((sub["overall_grade"] == "F").sum() / n * 100) if n else 0
-        mean_dur = sub["duration_seconds"].mean()
-        mean_tokens = sub["total_tokens"].mean()
-        n_items_total = len(items)
-        item_pct_ab = ((items["grade"].isin(["A", "B"])).sum() / n_items_total * 100) if n_items_total else 0
-        item_pct_f = ((items["grade"] == "F").sum() / n_items_total * 100) if n_items_total else 0
+    x = np.arange(len(xlabels))
+    ax.bar(x, match_rates, color=colors, edgecolor="white", alpha=0.8)
+    ax.set_xticks(x)
+    ax.set_xticklabels(xlabels, fontsize=10, rotation=25, ha="right")
+    ax.set_ylabel("Coefficients with same significance (%)", fontsize=14, fontweight="bold")
+    for i, rate in enumerate(match_rates):
+        ax.text(i, rate + 1, f"{rate:.0f}%", ha="center", fontsize=11, fontweight="bold")
+    ax.set_ylim(0, 105)
+    apply_style(ax)
 
-        rows.append({
-            "Approach": APPROACH_LABELS[approach],
-            "Runs": n,
-            "Mean Grade": f"{mean_grade:.2f}",
-            "% A-B (runs)": f"{pct_ab:.1f}",
-            "% F (runs)": f"{pct_f:.1f}",
-            "Items": n_items_total,
-            "% A-B (items)": f"{item_pct_ab:.1f}",
-            "% F (items)": f"{item_pct_f:.1f}",
-            "Mean Duration (min)": f"{mean_dur / 60:.1f}" if pd.notna(mean_dur) else "—",
-            "Mean Tokens": f"{mean_tokens:,.0f}" if pd.notna(mean_tokens) else "—",
-        })
+    ax2 = axes[1]
+    df["sig_diff"] = df["significance_stars_repl"].astype(int) - df["significance_stars_orig"].astype(int)
+    bins = [-4, -2, -1, 0, 1, 2, 4]
+    bin_labels = ["<-1", "-1", "0", "+1", "+2", ">+2"]
+    df["sig_diff_bin"] = pd.cut(df["sig_diff"], bins=bins, labels=bin_labels)
+    ct = pd.crosstab(df["sig_diff_bin"], df["approach"].astype(str), normalize="columns") * 100
+    ct = ct.reindex(columns=[a for a in approaches if a in ct.columns])
+    x2 = np.arange(len(bin_labels))
+    width = 0.8 / max(len(approaches), 1)
+    for i, a in enumerate(approaches):
+        if a not in ct.columns:
+            continue
+        ax2.bar(x2 + i * width, ct[a].values, width,
+                label=APPROACH_LABELS.get(a, a).replace("\n", " "),
+                color=APPROACH_COLORS.get(a, "#95a5a6"), alpha=0.8, edgecolor="white")
+    ax2.set_xticks(x2 + width * (len(approaches) - 1) / 2)
+    ax2.set_xticklabels(bin_labels, fontsize=11)
+    ax2.set_xlabel("Stars difference (replicated - original)", fontsize=14, fontweight="bold")
+    ax2.set_ylabel("Share of coefficients (%)", fontsize=14, fontweight="bold")
+    ax2.legend(fontsize=9)
+    apply_style(ax2)
 
-    summary = pd.DataFrame(rows)
-    summary.to_csv(output_dir / "summary_table.csv", index=False)
+    plt.tight_layout()
+    save_figure(fig, output_dir, "same_significance", subdir)
 
-    # LaTeX
-    latex = summary.to_latex(index=False, escape=True, column_format="l" + "r" * (len(summary.columns) - 1))
-    (output_dir / "summary_table.tex").write_text(latex)
-    print("  Saved summary_table")
+
+def plot_same_sign(df_cells: pd.DataFrame, output_dir: Path, subdir: str = ""):
+    df = df_cells[
+        (df_cells["row_type"] == "coefficient") &
+        df_cells["sign_match"].notna() &
+        (df_cells["item_grade"] != "F")
+    ].copy()
+    if df.empty:
+        return
+
+    approaches = _approaches_in(df)
+    fig, ax = plt.subplots(figsize=(10, 6))
+    match_rates, xlabels, colors, n_cells_list = [], [], [], []
+    for a in approaches:
+        sub = df[df["approach"] == a]
+        if sub.empty:
+            continue
+        match_rates.append(sub["sign_match"].mean() * 100)
+        xlabels.append(APPROACH_LABELS.get(a, a).replace("\n", " "))
+        colors.append(APPROACH_COLORS.get(a, "#95a5a6"))
+        n_cells_list.append(len(sub))
+
+    x = np.arange(len(xlabels))
+    ax.bar(x, match_rates, color=colors, edgecolor="white", alpha=0.8)
+    ax.set_xticks(x)
+    ax.set_xticklabels(xlabels, fontsize=10, rotation=25, ha="right")
+    ax.set_ylabel("Coefficients with same sign (%)", fontsize=16, fontweight="bold")
+    for i, (rate, n) in enumerate(zip(match_rates, n_cells_list)):
+        ax.text(i, rate + 0.5, f"{rate:.1f}%\n(n={n})", ha="center", fontsize=10, fontweight="bold")
+    ax.set_ylim(0, 105)
+    apply_style(ax)
+    plt.tight_layout()
+    save_figure(fig, output_dir, "same_sign", subdir)
+
+
+def plot_statistic_pct_difference(df_cells: pd.DataFrame, output_dir: Path,
+                                   row_type_filter: str, name: str,
+                                   ylabel: str = "", subdir: str = ""):
+    df = df_cells[
+        (df_cells["row_type"] == row_type_filter) &
+        df_cells["percent_difference"].notna() &
+        df_cells["is_numeric"] &
+        (df_cells["item_grade"] != "F")
+    ].copy()
+    if df.empty:
+        return
+
+    df["pct_capped"] = df["percent_difference"].clip(upper=200)
+    approaches = _approaches_in(df)
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+    data, labels, colors = [], [], []
+    for a in approaches:
+        vals = df.loc[df["approach"] == a, "pct_capped"].values
+        if len(vals) > 0:
+            data.append(vals)
+            labels.append(APPROACH_LABELS.get(a, a).replace("\n", " "))
+            colors.append(APPROACH_COLORS.get(a, "#95a5a6"))
+
+    if not data:
+        plt.close(fig)
+        return
+
+    bp = ax.boxplot(data, tick_labels=labels, patch_artist=True, widths=0.6, showfliers=False)
+    plt.setp(ax.get_xticklabels(), fontsize=10, rotation=25, ha="right")
+    for patch, c in zip(bp["boxes"], colors):
+        patch.set_facecolor(c)
+        patch.set_alpha(0.7)
+    for median in bp["medians"]:
+        median.set_color("black")
+        median.set_linewidth(2)
+    for i, vals in enumerate(data):
+        med = np.median(vals)
+        ax.annotate(f"{med:.1f}%", xy=(i + 1, med), xytext=(i + 1.3, med),
+                    fontsize=11, color="black", fontweight="bold", va="center")
+
+    ax.set_ylabel(ylabel or f"% difference ({row_type_filter})", fontsize=16, fontweight="bold")
+    apply_style(ax)
+    plt.tight_layout()
+    save_figure(fig, output_dir, name, subdir)
 
 
 # ============================================================================
-# Plot Index
+# Section: Error Analysis
 # ============================================================================
 
-PLOT_INDEX = [
-    # (filename, description, data_source)
-    # data_source: "runs" = run-level (overall grade), "items:both" = table+figure items,
-    #              "items:table" = table items only, "items:figure" = figure items only
-    # Section 1
-    ("overall_grades", "Overall grade distribution by approach", "runs"),
-    ("table_grades", "Grade distribution for table items", "items:table"),
-    ("figure_grades", "Grade distribution for figure items", "items:figure"),
-    ("item_grades", "Grade distribution for all items (tables + figures)", "items:both"),
-    ("f_grade_breakdown", "F-grade subcategories by approach (all items)", "items:both"),
-    ("f_grade_table_vs_figure", "F-grade subcategories: tables vs figures side-by-side", "items:both"),
-    # Section 1b: Cell-level
-    ("cell_count_distribution", "Number of cells compared per table, by approach", "cells"),
-    ("cell_grade_distribution", "Grade distribution at individual cell level", "cells"),
-    ("cell_pct_difference", "Percent difference distribution at cell level", "cells"),
-    ("extractor_cells", "Extractor cells per table + replicator fill rate", "cells"),
-    # Section 2
-    ("item_number_vs_grade", "Mean grade by item number, faceted by table/figure", "items:both"),
-    ("methodology_length_vs_grade", "Methodology summary length vs overall grade", "runs"),
-    ("code_length_vs_grade", "Total code size vs overall grade", "runs"),
-    ("n_datasets_vs_grade", "Number of datasets vs overall grade", "runs"),
-    ("data_size_vs_grade", "Total data size vs overall grade", "runs"),
-    ("duration_vs_grade", "Run duration vs overall grade", "runs"),
-    ("cost_distribution", "Cost per run by approach (approaches with cost data)", "runs"),
-    ("token_usage", "Input and output token distribution (approaches with token data)", "runs"),
-    ("duration_distribution", "Distribution of run duration by approach", "runs"),
-    # Section 3
-    ("fault_attribution", "Proxy fault attribution from discrepancy text", "items:both"),
-    ("likely_causes_replicator", "Frequency of discrepancy term categories", "items:both"),
-    ("no_code_analysis", "Runs that produced no code, by approach and failure type", "runs"),
-    # Section 4
-    ("agreement_matrix", "Pairwise grade agreement between approaches", "items:both"),
-    ("best_of_k", "Best grade per paper for 1..k approaches", "runs"),
-    ("paper_difficulty", "Papers ranked by mean grade with range", "runs"),
-    ("tokens_vs_grade", "Total tokens vs overall grade", "runs"),
-    ("pairwise_dominance", "Approach A beats B on X% of papers", "runs"),
-    ("grade_by_journal", "Grade distribution grouped by journal", "runs"),
-    ("cumulative_success", "Fraction of A/B items as items accumulate", "items:both"),
-]
+def plot_fault_attribution(df_items: pd.DataFrame, output_dir: Path, subdir: str = ""):
+    """Stacked bar of primary_fault from explainer_report, by approach."""
+    df = df_items[
+        df_items["primary_fault"].notna() &
+        (df_items["primary_fault"] != "") &
+        (df_items["grade"] != "F")
+    ].copy()
+    if df.empty:
+        return
 
-
-def _generate_plot_index(output_dir: Path):
-    """Write a markdown index of all plots with data source info."""
-    lines = [
-        "# i4rep Benchmark Analysis — Plot Index\n",
-        "## Data sources\n",
-        "- **runs**: One observation per (paper, approach) — uses overall run-level grade",
-        "- **items:both**: One observation per (paper, approach, item) — uses tables AND figures",
-        "- **items:table**: Table items only",
-        "- **items:figure**: Figure items only\n",
+    cat_order = [
+        "replicator", "extractor_misinterpreted", "extractor_missed",
+        "data_limitation", "paper_underspecified", "paper_code_mismatch",
+        "results_extractor", "software_differences", "results_mismatched", "other",
     ]
-
-    current_section = None
-    sections = {
-        0: "Section 1: Performance Distribution",
-        6: "Section 1b: Cell-Level Analysis",
-        10: "Section 2: Determinants of Performance",
-        19: "Section 3: Explainer Analysis",
-        22: "Section 4: Additional Analyses",
+    cat_labels = {
+        "replicator": "Replicator", "extractor_misinterpreted": "Extractor misinterpreted",
+        "extractor_missed": "Extractor missed", "data_limitation": "Data limitation",
+        "paper_underspecified": "Paper underspecified", "paper_code_mismatch": "Paper–code mismatch",
+        "results_extractor": "Results extractor", "software_differences": "Software differences",
+        "results_mismatched": "Results mismatched", "other": "Other",
+    }
+    cat_colors = {
+        "replicator": "#e74c3c", "extractor_misinterpreted": "#e67e22",
+        "extractor_missed": "#f39c12", "data_limitation": "#3498db",
+        "paper_underspecified": "#9b59b6", "paper_code_mismatch": "#8e44ad",
+        "results_extractor": "#1abc9c", "software_differences": "#2ecc71",
+        "results_mismatched": "#34495e", "other": "#95a5a6",
     }
 
-    for i, (fname, desc, source) in enumerate(PLOT_INDEX):
-        if i in sections:
-            current_section = sections[i]
-            lines.append(f"\n## {current_section}\n")
-            lines.append("| Plot | Description | Data |")
-            lines.append("|------|-------------|------|")
-        lines.append(f"| [{fname}]({fname}.png) | {desc} | `{source}` |")
+    extra_cats = [c for c in df["primary_fault"].unique() if c not in cat_order]
+    cat_order = cat_order + extra_cats
 
-    lines.append("\n## Summary outputs\n")
-    lines.append("| File | Description |")
-    lines.append("|------|-------------|")
-    lines.append("| [df_runs.csv](df_runs.csv) | Run-level DataFrame |")
-    lines.append("| [df_items.csv](df_items.csv) | Item-level DataFrame |")
-    lines.append("| [summary_table.csv](summary_table.csv) | Summary statistics by approach |")
-    lines.append("| [summary_table.tex](summary_table.tex) | LaTeX version of summary table |")
-    lines.append("")
+    ct = pd.crosstab(df["approach"], df["primary_fault"], normalize="index") * 100
+    ct = ct.reindex(columns=[c for c in cat_order if c in ct.columns], fill_value=0)
 
-    (output_dir / "README.md").write_text("\n".join(lines))
-    print("  Saved README.md")
+    fig, ax = plt.subplots(figsize=(12, 6))
+    present = [a for a in _approaches_in(df) if a in ct.index]
+    ct_present = ct.loc[present].copy()
+    ct_present.columns = [cat_labels.get(c, c) for c in ct_present.columns]
+    display_colors = [cat_colors.get(c, "#95a5a6") for c in ct.columns]
+
+    ct_present.plot(kind="bar", stacked=True, ax=ax, color=display_colors, edgecolor="white", width=0.7)
+    ax.set_xticklabels([APPROACH_LABELS.get(a, a).replace("\n", " ") for a in present], fontsize=10, rotation=25, ha="right")
+    ax.set_ylabel("Share (%)", fontsize=18, fontweight="bold")
+    ax.legend(fontsize=10, title="Fault Category", loc="upper right")
+    apply_style(ax)
+    plt.tight_layout()
+    save_figure(fig, output_dir, "fault_attribution", subdir)
+
+
+def generate_fault_by_grade_table(df_items: pd.DataFrame, output_dir: Path, subdir: str = ""):
+    df = df_items[
+        df_items["primary_fault"].notna() &
+        (df_items["primary_fault"] != "") &
+        (df_items["grade"] != "F")
+    ].copy()
+    if df.empty:
+        return
+
+    ct = pd.crosstab(df["grade"], df["primary_fault"])
+    grades_shown = [g for g in GRADE_ORDER if g != "F" and g in ct.index]
+    cat_order = [
+        "replicator", "extractor_misinterpreted", "extractor_missed",
+        "data_limitation", "paper_underspecified", "paper_code_mismatch",
+        "results_extractor", "software_differences", "results_mismatched", "other",
+    ]
+    extra = [c for c in ct.columns if c not in cat_order]
+    cat_order = [c for c in cat_order if c in ct.columns] + extra
+    ct = ct.reindex(index=grades_shown, columns=cat_order, fill_value=0)
+
+    ct["Total"] = ct.sum(axis=1)
+    ct_pct = ct.div(ct["Total"], axis=0).drop(columns="Total") * 100
+
+    combined = pd.DataFrame(index=ct.index)
+    for col in cat_order:
+        combined[col] = ct[col].astype(str) + " (" + ct_pct[col].round(0).astype(int).astype(str) + "%)"
+    combined["Total"] = ct["Total"].astype(int)
+
+    target = output_dir / subdir if subdir else output_dir
+    target.mkdir(parents=True, exist_ok=True)
+    combined.to_csv(target / "fault_by_grade.csv")
+    latex = combined.to_latex(escape=True, column_format="l" + "r" * len(combined.columns))
+    (target / "fault_by_grade.tex").write_text(latex)
+    print(f"  Saved fault_by_grade")
+    print(combined.to_string())
+
+
+def plot_within_table_error_agreement(df_items: pd.DataFrame, output_dir: Path, subdir: str = ""):
+    df = df_items[
+        (df_items["item_type"] == "table") &
+        df_items["primary_fault"].notna() &
+        (df_items["primary_fault"] != "") &
+        (df_items["grade"] != "F")
+    ].copy()
+    if df.empty:
+        return
+
+    df["approach"] = df["approach"].astype(str)
+    pivot = df.pivot_table(index=["paper_slug", "item_id"], columns="approach", values="primary_fault", aggfunc="first")
+    approaches = _approaches_in(df)
+    approaches = [a for a in approaches if a in pivot.columns]
+    if len(approaches) < 2:
+        return
+
+    n = len(approaches)
+    agreement = np.full((n, n), np.nan)
+    for i in range(n):
+        for j in range(n):
+            a_vals = pivot[approaches[i]] if approaches[i] in pivot.columns else pd.Series(dtype=str)
+            b_vals = pivot[approaches[j]] if approaches[j] in pivot.columns else pd.Series(dtype=str)
+            mask = a_vals.notna() & b_vals.notna()
+            if mask.sum() == 0:
+                continue
+            agreement[i, j] = (a_vals[mask] == b_vals[mask]).mean() * 100
+
+    fig, ax = plt.subplots(figsize=(7, 6))
+    labels = [APPROACH_LABELS.get(a, a).replace("\n", " ") for a in approaches]
+    sns.heatmap(agreement, annot=True, fmt=".0f", xticklabels=labels, yticklabels=labels,
+                cmap="YlGn", vmin=0, vmax=100, ax=ax, square=True, cbar_kws={"shrink": 0.8})
+    ax.set_xlabel("Error Attribution Agreement (%)", fontsize=14, fontweight="bold")
+    ax.tick_params(labelsize=10)
+    plt.tight_layout()
+    save_figure(fig, output_dir, "within_table_error_agreement", subdir)
 
 
 # ============================================================================
@@ -1643,7 +1568,6 @@ def main():
     parser.add_argument("--output-dir", type=str, default="analysis_output")
     args = parser.parse_args()
 
-    # Auto-detect paths
     if args.results_dir is None:
         if TEXTLAB_BASE.exists():
             args.results_dir = str(TEXTLAB_BASE / "results")
@@ -1674,16 +1598,26 @@ def main():
         print("No results found. Exiting.")
         return
 
+    # Filter out non-numerical tables from item-level analysis
+    n_non_numerical = df_items["non_numerical"].sum() if "non_numerical" in df_items.columns else 0
+    if n_non_numerical > 0:
+        df_items = df_items[~df_items["non_numerical"]].copy()
+        combos = [a for a in APPROACH_ORDER if a in df_items["approach"].unique()]
+        df_items["approach"] = pd.Categorical(df_items["approach"], categories=combos, ordered=True)
+        df_items["grade"] = pd.Categorical(df_items["grade"], categories=GRADE_ORDER, ordered=True)
+        print(f"Excluded {n_non_numerical} non-numerical table items from analysis")
+
     # Print quick summary
     print(f"\n{'='*60}")
     print(f"Runs:  {len(df_runs)} ({df_runs['paper_slug'].nunique()} papers, "
           f"{df_runs['approach'].nunique()} approaches)")
     print(f"Items: {len(df_items)}")
-    for a in APPROACH_ORDER:
+    for a in df_runs["approach"].cat.categories:
         sub = df_runs[df_runs["approach"] == a]
         if sub.empty:
             continue
-        print(f"  {APPROACH_LABELS[a]:12s}: {len(sub):3d} runs, "
+        label = APPROACH_LABELS.get(a, a).replace("\n", " ")
+        print(f"  {label:25s}: {len(sub):3d} runs, "
               f"mean={sub['overall_grade_num'].mean():.2f}, "
               f"A-B={sub['overall_grade'].isin(['A','B']).mean()*100:.0f}%, "
               f"F={sub['overall_grade'].eq('F').mean()*100:.0f}%")
@@ -1692,64 +1626,65 @@ def main():
     # Save DataFrames
     df_runs.to_csv(output_dir / "df_runs.csv", index=False)
     df_items.to_csv(output_dir / "df_items.csv", index=False)
-    df_cells.to_csv(output_dir / "df_cells.csv", index=False)
+    df_cells.to_csv(output_dir / "df_cells.csv", index=False, escapechar="\\")
     print(f"  Saved df_runs.csv, df_items.csv, df_cells.csv ({len(df_cells)} cells)")
 
-    # Section 1: Performance Distribution
-    print("\nSection 1: Performance Distribution")
-    plot_overall_grade_distribution(df_runs, output_dir)
-    plot_item_grade_by_type(df_items, output_dir, "table", "table_grades")
-    plot_item_grade_by_type(df_items, output_dir, "figure", "figure_grades")
-    plot_item_grade_by_type(df_items, output_dir, None, "item_grades")
-    plot_f_grade_breakdown(df_items, df_runs, output_dir)
-    plot_f_grade_table_vs_figure(df_items, df_runs, output_dir)
+    # ── Setup & Descriptives ──────────────────────────────────────
+    SD = "setup_descriptives"
+    print(f"\n{SD}")
+    plot_extractor_row_type_distribution(df_cells, output_dir, subdir=SD)
+    plot_first_fail_distribution(df_items, output_dir, subdir=SD)
+    plot_extractor_cells(df_cells, output_dir, subdir=SD)
+    generate_summary_table(df_runs, df_items, output_dir, subdir=SD)
+    generate_overview_csv(df_runs, df_items, output_dir, subdir=SD)
 
-    # Section 1b: Cell-level analysis
-    print("\nSection 1b: Cell-Level Analysis")
-    plot_cell_count_distribution(df_cells, output_dir)
-    plot_cell_grade_distribution(df_cells, output_dir)
-    plot_cell_pct_difference(df_cells, output_dir)
-    plot_extractor_cells(df_cells, output_dir)
-
-    # Section 2: Determinants
-    print("\nSection 2: Determinants of Performance")
-    plot_item_number_vs_grade(df_items, output_dir)
-    plot_scatter_vs_grade(df_runs, "methodology_summary_len", "Methodology Summary Length (chars)",
-                          output_dir, "methodology_length_vs_grade")
-    plot_scatter_vs_grade(df_runs, "total_code_chars", "Total Code Size (chars)",
-                          output_dir, "code_length_vs_grade", log_x=True)
-    plot_n_datasets_vs_grade(df_runs, output_dir)
+    # ── Paper Level ───────────────────────────────────────────────
+    df_items_tables = df_items[df_items["item_type"] == "table"]
+    PL = "paper_level"
+    print(f"\n{PL}")
+    plot_agreement_matrix(df_items_tables, output_dir, subdir=PL)
+    plot_overall_grade_distribution(df_runs, output_dir, subdir=PL)
+    plot_paper_difficulty(df_runs, output_dir, subdir=PL, exclude_f=True)
     plot_scatter_vs_grade(df_runs, "total_data_size_bytes", "Total Data Size (bytes)",
-                          output_dir, "data_size_vs_grade", log_x=True)
-    plot_duration_vs_grade(df_runs, output_dir)
-    plot_cost_distribution(df_runs, output_dir)
-    plot_token_usage(df_runs, output_dir)
-    plot_duration_distribution(df_runs, output_dir)
+                          output_dir, "data_size_vs_grade", log_x=True, subdir=PL, exclude_f=True)
+    plot_grade_by_discipline(df_runs, output_dir, subdir=PL)
+    plot_grade_by_language(df_runs, output_dir, subdir=PL)
+    plot_duration_vs_grade(df_runs, output_dir, subdir=PL)
 
-    # Section 3: Explainer
-    print("\nSection 3: Explainer Analysis")
-    plot_fault_attribution(df_items, output_dir)
-    plot_likely_causes_frequency(df_items, output_dir)
-    plot_no_code_analysis(df_runs, output_dir)
+    # ── Item Level — Tables ───────────────────────────────────────
+    IT = "item_tables"
+    print(f"\n{IT}")
+    plot_item_grade_by_type(df_items, output_dir, "table", "table_grade_distribution", subdir=IT)
+    plot_item_number_vs_grade(df_items, output_dir, subdir=IT)
+    plot_scatter_vs_grade(df_runs, "methodology_summary_len", "Methodology Summary Length (chars)",
+                          output_dir, "methodology_length_vs_grade", subdir=IT, exclude_f=True)
+    plot_scatter_vs_grade(df_runs, "total_code_chars", "Total Code Size (chars)",
+                          output_dir, "code_length_vs_grade", log_x=True, subdir=IT, exclude_f=True)
 
-    # Section 4: Additional
-    print("\nSection 4: Additional Analyses")
-    plot_agreement_matrix(df_items, output_dir)
-    plot_best_of_k(df_runs, output_dir)
-    plot_paper_difficulty(df_runs, output_dir)
-    plot_scatter_vs_grade(df_runs, "total_tokens", "Total Tokens",
-                          output_dir, "tokens_vs_grade", log_x=True)
-    plot_pairwise_dominance(df_runs, output_dir)
-    plot_grade_by_journal(df_runs, output_dir)
-    plot_cumulative_success(df_items, output_dir)
+    # ── Item Level — Figures ──────────────────────────────────────
+    IF_ = "item_figures"
+    print(f"\n{IF_}")
+    plot_item_grade_by_type(df_items, output_dir, "figure", "figure_grade_distribution", subdir=IF_)
 
-    # Summary
-    print("\nSummary Table")
-    generate_summary_table(df_runs, df_items, output_dir)
+    # ── Cell Level ────────────────────────────────────────────────
+    CL = "cell_level"
+    print(f"\n{CL}")
+    plot_coefficient_se_scaled(df_cells, output_dir, subdir=CL)
+    plot_same_significance(df_cells, output_dir, subdir=CL)
+    plot_same_sign(df_cells, output_dir, subdir=CL)
+    plot_statistic_pct_difference(df_cells, output_dir, "statistic_n_obs",
+                                   "n_obs_pct_difference",
+                                   ylabel="% difference (N observations)", subdir=CL)
+    plot_statistic_pct_difference(df_cells, output_dir, "statistic_r2",
+                                   "r2_pct_difference",
+                                   ylabel="% difference (R²)", subdir=CL)
 
-    # Plot index markdown
-    print("\nGenerating plot index")
-    _generate_plot_index(output_dir)
+    # ── Error Analysis ────────────────────────────────────────────
+    EA = "error_analysis"
+    print(f"\n{EA}")
+    plot_fault_attribution(df_items, output_dir, subdir=EA)
+    generate_fault_by_grade_table(df_items, output_dir, subdir=EA)
+    plot_within_table_error_agreement(df_items, output_dir, subdir=EA)
 
     print(f"\nDone! All outputs in {output_dir}/")
 
