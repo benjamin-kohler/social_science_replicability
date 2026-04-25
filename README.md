@@ -8,10 +8,10 @@ Reproduction of Social-Science Results"*.
 - Benjamin Kohler, David Zollikofer, Johanna Einsiedler, Alexander Hoyle, Elliott Ash
 
 
-## Read the paper
+[Read the paper](https://elliottash.com/wp-content/uploads/2026/04/Kohler-Zollikofer-Einsiedler-Hoyle-Ash-Read-Paper-Write-Code-Agentic-Reproduction-Social-Science-Results.pdf)
 
-The current draft lives on Overleaf:
-**<https://elliottash.com/wp-content/uploads/2026/04/Kohler-Zollikofer-Einsiedler-Hoyle-Ash-Read-Paper-Write-Code-Agentic-Reproduction-Social-Science-Results.pdf>**
+
+
 
 
 
