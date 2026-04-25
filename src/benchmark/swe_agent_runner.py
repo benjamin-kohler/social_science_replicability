@@ -46,8 +46,8 @@ class SweAgentRunner(BaseReplicationRunner):
     def __init__(
         self,
         timeout: int = 600,
-        step_limit: int = 100,
-        cost_limit: float = 3.0,
+        step_limit: int = 200,
+        cost_limit: float = 10.0,
         allow_web_access: bool = False,
         item_types: list[str] | None = None,
     ):
@@ -102,7 +102,8 @@ class SweAgentRunner(BaseReplicationRunner):
                 "First explore the data files to learn the actual "
                 "column names. Then write Python scripts to replicate each table and figure. "
                 "You MUST execute the scripts with bash and fix any errors until they run "
-                "successfully. Use the exact output filenames specified in TASK.md for each item."
+                "successfully. Use the exact output filenames specified in TASK.md for each item. "
+                "Do NOT submit until ALL tables listed in table_templates/ have been replicated."
             )
 
         litellm_model = _to_litellm_model(model)

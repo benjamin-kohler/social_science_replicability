@@ -92,6 +92,7 @@ class CodexRunner(BaseReplicationRunner):
                 cmd.extend(["--add-dir", data_target])
             if not self.allow_web_access:
                 cmd.extend(["-c", "sandbox_permissions=[\"disk-full-read-access\"]"])
+                cmd.extend(["--disable", "web_search"])
             cmd.append(prompt_text)
             # Strip OPENAI_API_KEY so codex uses its ChatGPT subscription
             # instead of consuming API tokens directly.

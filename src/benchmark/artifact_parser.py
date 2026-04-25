@@ -80,16 +80,26 @@ class ArtifactParser:
                                     cell["significance_stars"] = int(cell["significance_stars"])
                                 except (ValueError, TypeError):
                                     cell["significance_stars"] = 0
+                            if "significance_level" in cell:
+                                try:
+                                    val = cell["significance_level"]
+                                    if val is not None:
+                                        cell["significance_level"] = float(val)
+                                except (ValueError, TypeError):
+                                    cell["significance_level"] = None
                         et = ExtractedTable(**data)
                         if et.cells:
                             replicated_et = et
                     except Exception:
                         pass  # treat as generic JSON table data
 
+                # Wrap non-dict data (e.g. list-of-dicts from SWE-agent) so
+                # GeneratedTable.data validation passes.
+                table_data = data if isinstance(data, dict) else {"rows": data}
                 tables.append(
                     GeneratedTable(
                         table_number=table_number,
-                        data=data,
+                        data=table_data,
                         format="csv" if suffix == ".csv" else "json",
                         code_reference=path.name,
                         execution_success=True,
@@ -349,13 +359,13 @@ def _infer_item_number(stem: str, default_prefix: str) -> str:
 
     # Dotted or letter-prefixed numbering: table_2.1, table_a.1, figure_3.2
     dotted = re.search(
-        r"(?:table|figure|fig)[_\-\s]?([a-z]?\d*\.?\d+)", stem_lower
+        r"(?:table|figure|fig)[_\-\s]?([a-z]?\d*\.\d+)", stem_lower
     )
     if dotted:
         return f"{prefix} {dotted.group(1).upper()}"
 
-    # Plain number: table_1, figure_2
-    plain = re.search(r"(?:table|figure|fig)[_\-\s]?(\d+)", stem_lower)
+    # Plain number with optional letter suffix: table_1, table_3a, figure_2
+    plain = re.search(r"(?:table|figure|fig)[_\-\s]?(\d+[a-z]?)", stem_lower)
     if plain:
         return f"{prefix} {plain.group(1)}"
 

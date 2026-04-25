@@ -15,7 +15,6 @@ from .schemas import (
     VerificationReport,
     DiscrepancyAnalysis,
     ExplanationReport,
-    ReplicationState,
 )
 from .config import Config, load_config
 
@@ -34,7 +33,6 @@ __all__ = [
     "VerificationReport",
     "DiscrepancyAnalysis",
     "ExplanationReport",
-    "ReplicationState",
     "Config",
     "load_config",
 ]

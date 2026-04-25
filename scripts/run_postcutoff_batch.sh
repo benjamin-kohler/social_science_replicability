@@ -3,11 +3,12 @@
 # run_postcutoff_batch.sh — Run the replicability benchmark on post-cutoff papers.
 #
 # Usage:
-#   # Inside tmux on textlab:
+#   # On the machine running the benchmark (tmux recommended for long jobs):
 #   tmux new -s postcutoff
 #   bash scripts/run_postcutoff_batch.sh
 #
 #   # Override defaults via env vars:
+#   PROJECT_ROOT=/path/to/repo bash scripts/run_postcutoff_batch.sh
 #   PARALLEL=3 APPROACHES="claude-code codex" bash scripts/run_postcutoff_batch.sh
 #   PAPERS="209827 211322" bash scripts/run_postcutoff_batch.sh
 
@@ -16,9 +17,9 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
-PROJECT_ROOT="/data/individual/benjamin/social_science_replicability"
-PAPERS_DIR="$PROJECT_ROOT/data/postcutoff/papers"
-RESULTS_DIR="$PROJECT_ROOT/data/postcutoff/results"
+PROJECT_ROOT="${PROJECT_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+PAPERS_DIR="${PAPERS_DIR:-$PROJECT_ROOT/data/postcutoff/papers}"
+RESULTS_DIR="${RESULTS_DIR:-$PROJECT_ROOT/data/postcutoff/results}"
 CONFIG_DIR="$PROJECT_ROOT/config"
 LOG_FILE="$PROJECT_ROOT/data/postcutoff/batch_run_$(date '+%Y%m%d_%H%M%S').log"
 

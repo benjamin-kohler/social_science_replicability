@@ -21,7 +21,6 @@ from src.models.schemas import (
     RegressionSpec,
     ReplicationGrade,
     ReplicationResults,
-    ReplicationState,
     TableSpec,
     VerificationReport,
 )

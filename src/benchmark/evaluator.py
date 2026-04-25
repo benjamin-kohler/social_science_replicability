@@ -110,6 +110,7 @@ class SharedEvaluator:
             paper_summary=paper_summary,
             replication_results=replication_results,
             paper_results=paper_results,
+            workspace_dir=artifacts.workspace_dir,
         )
 
         # Save reports and usage

@@ -23,7 +23,10 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
-BASE_DIR = Path("/Users/bkohler/Desktop/social_science_replicability/data/i4replicate")
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+BASE_DIR = Path(os.environ.get(
+    "I4REPLICATE_BASE", str(PROJECT_ROOT / "data" / "i4replicate"),
+))
 CSV_PATH = BASE_DIR / "successfully_replicated_papers.csv"
 PKG_DIR = BASE_DIR / "replication_packages"
 RESULTS_CSV = BASE_DIR / "download_results.csv"

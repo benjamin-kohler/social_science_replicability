@@ -4,17 +4,23 @@
 Reads the i4replicate CSVs, extracts/organizes replication packages into
 a standard directory layout under data/i4replicate/papers/{doi_slug}/.
 
+`data/` is filtered using the GPT audit (``data/audit_replication_data_v2.json``
+or v1 fallback): only files whose path matches the audit's
+``replication_data_paths`` / ``raw_data_paths`` are copied there.
+``replication_package/`` still receives the full package.
+
 Each paper directory gets:
-  - data/                  — data files only
-  - replication_package/   — code files and READMEs
-  - paper.pdf              — if found in the package
-  - metadata.json          — title, authors, journal, year, doi, perfect_replication
+  - data/                  — files flagged as replication inputs by the audit
+  - replication_package/   — full extracted package (code, data, readmes, PDFs)
+  - paper.pdf              — if found in the package / downloaded separately
+  - metadata.json          — title, authors, journal, year, doi + audit fields
 
 Usage:
   python scripts/setup_i4rep_batch.py
   python scripts/setup_i4rep_batch.py --dry-run
   python scripts/setup_i4rep_batch.py --force        # overwrite existing
   python scripts/setup_i4rep_batch.py --try-pdfs      # attempt PDF downloads
+  python scripts/setup_i4rep_batch.py --audit data/audit_replication_data_v2.json
 """
 
 import argparse
@@ -44,6 +50,8 @@ PACKAGES_DIR = I4REP_DIR / "replication_packages"
 PAPERS_DIR = I4REP_DIR / "papers"
 PAPERS_CSV = I4REP_DIR / "successfully_replicated_papers.csv"
 DOWNLOAD_CSV = I4REP_DIR / "download_results.csv"
+AUDIT_V2_JSON = PROJECT_ROOT / "data" / "audit_replication_data_v2.json"
+AUDIT_V1_JSON = PROJECT_ROOT / "data" / "audit_replication_data.json"
 
 # ---------------------------------------------------------------------------
 # File classification
@@ -75,6 +83,70 @@ SKIP_DOIS = {
     "10.1093_ej_ueac074",   # Teaching Norms — code only
     "10.1257_aer.20210867",  # Digital Addiction — massive package, no simple data
 }
+
+
+def load_audit(path: Path) -> dict[str, dict]:
+    """Load GPT audit results keyed by paper_id. Empty dict if missing."""
+    if not path.exists():
+        return {}
+    try:
+        entries = json.loads(path.read_text())
+    except json.JSONDecodeError as e:
+        log.warning(f"Failed to parse audit JSON at {path}: {e}")
+        return {}
+    out: dict[str, dict] = {}
+    for entry in entries:
+        pid = entry.get("paper_id")
+        if pid:
+            out[pid] = entry
+    return out
+
+
+def get_replication_paths(audit_entry: dict) -> list[str]:
+    """Return the replication data paths from an audit entry (v2 or v1)."""
+    paths = audit_entry.get("replication_data_paths", audit_entry.get("raw_data_paths", []))
+    if isinstance(paths, str):
+        paths = [p.strip() for p in paths.split(";") if p.strip()]
+    return [p for p in paths if p]
+
+
+def matches_path_pattern(file_rel: str, patterns: list[str]) -> bool:
+    """Check if a relative file path matches any of the audit's paths.
+
+    Mirrors ``scripts/setup_papers.matches_path_pattern``. Patterns are
+    case-insensitive. A trailing ``/`` turns a pattern into a directory
+    prefix; otherwise the pattern is compared by full path, basename, or
+    path-suffix.
+    """
+    if not patterns:
+        return False
+    file_rel_lower = file_rel.lower()
+    file_parts = Path(file_rel).parts
+
+    for pattern in patterns:
+        p = pattern.strip()
+        if not p:
+            continue
+        pl = p.lower()
+        if p.endswith("/"):
+            dir_name = pl.rstrip("/")
+            for part in file_parts:
+                if part.lower() == dir_name or part.lower().startswith(dir_name):
+                    return True
+            if file_rel_lower.startswith(dir_name):
+                return True
+        else:
+            if file_rel_lower == pl:
+                return True
+            if file_rel_lower.endswith("/" + pl):
+                return True
+            # Basename-only fallback: only when the pattern is itself a bare
+            # filename (no path separator). If the pattern already specifies a
+            # directory (e.g., "data/raw/audit.dta"), we require an exact or
+            # suffix match — we don't want "data/analysis/audit.dta" to match.
+            if "/" not in p and Path(file_rel).name.lower() == p.lower():
+                return True
+    return False
 
 
 def doi_to_slug(doi: str) -> str:
@@ -246,10 +318,15 @@ def setup_paper_dir(
     metadata: dict,
     package_path: Path,
     output_dir: Path,
+    audit_entry: dict | None = None,
     force: bool = False,
     dry_run: bool = False,
 ) -> dict:
     """Set up a single paper directory.
+
+    The GPT audit entry (if provided) decides which files land in ``data/``.
+    Everything else in the package still ends up in ``replication_package/``
+    so the package remains inspectable, but the agent only sees ``data/``.
 
     Returns a status dict with keys: doi_slug, status, has_pdf, n_data, n_code, message
     """
@@ -261,7 +338,12 @@ def setup_paper_dir(
         "n_data": 0,
         "n_code": 0,
         "message": "",
+        "had_audit": audit_entry is not None,
+        "n_audit_paths": 0,
     }
+
+    replication_paths = get_replication_paths(audit_entry or {})
+    result["n_audit_paths"] = len(replication_paths)
 
     if paper_dir.exists() and not force:
         result["status"] = "skipped"
@@ -275,7 +357,20 @@ def setup_paper_dir(
 
     if dry_run:
         result["status"] = "dry_run"
-        result["message"] = "would be created"
+        result["message"] = (
+            f"would be created (audit paths: {len(replication_paths)})"
+        )
+        return result
+
+    if audit_entry is None:
+        result["status"] = "error"
+        result["message"] = "no audit entry for paper"
+        log.warning(f"  No audit entry for {doi_slug} — skipping")
+        return result
+    if not replication_paths:
+        result["status"] = "error"
+        result["message"] = "audit entry has no replication_data_paths"
+        log.warning(f"  No replication_data_paths for {doi_slug} — skipping")
         return result
 
     # Create temp extraction directory
@@ -310,31 +405,6 @@ def setup_paper_dir(
             result["message"] = "Package is empty after extraction"
             return result
 
-        # Classify files
-        data_files = []
-        code_files = []
-        readme_files = []
-        pdf_files = []
-        both_files = []
-
-        for rel, abs_p in all_files:
-            cat = classify_file(rel)
-            if cat == "data":
-                data_files.append((rel, abs_p))
-            elif cat == "code":
-                code_files.append((rel, abs_p))
-            elif cat == "readme":
-                readme_files.append((rel, abs_p))
-            elif cat == "pdf":
-                pdf_files.append((rel, abs_p))
-            elif cat == "both":
-                both_files.append((rel, abs_p))
-            # skip: do nothing
-
-        # NOTE: We do NOT extract paper.pdf from replication packages.
-        # PDFs in packages are often appendices/codebooks, not the actual paper.
-        # Papers must be sourced separately (e.g., downloaded manually).
-
         # Create paper directory
         if paper_dir.exists():
             shutil.rmtree(paper_dir)
@@ -345,38 +415,47 @@ def setup_paper_dir(
         data_dest.mkdir()
         code_dest.mkdir()
 
-        # Copy data files
-        for rel, abs_p in data_files + both_files:
-            dest = data_dest / rel
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(abs_p, dest)
+        # Copy every (non-skip) file to replication_package/. Only copy audit-
+        # flagged replication inputs to data/.
+        n_data = 0
+        n_repl = 0
+        n_skipped = 0
+        for rel, abs_p in all_files:
+            if classify_file(rel) == "skip":
+                n_skipped += 1
+                continue
 
-        # Copy code files + readmes + both
-        for rel, abs_p in code_files + readme_files + both_files:
-            dest = code_dest / rel
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(abs_p, dest)
+            repl_dest = code_dest / rel
+            repl_dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(abs_p, repl_dest)
+            n_repl += 1
 
-        # Copy all PDFs to replication_package (not as paper.pdf)
-        for rel, abs_p in pdf_files:
-            dest = code_dest / rel
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(abs_p, dest)
+            if matches_path_pattern(rel, replication_paths):
+                data_path = data_dest / rel
+                data_path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(abs_p, data_path)
+                n_data += 1
 
-        # Write metadata
+        # Write metadata with audit fields alongside paper metadata
+        enriched_meta = {
+            **metadata,
+            "data_sufficiency": audit_entry.get("data_sufficiency", "unknown"),
+            "sufficiency_explanation": audit_entry.get("sufficiency_explanation", ""),
+            "readme_found": audit_entry.get("readme_found", False),
+            "audit_notes": audit_entry.get("notes", ""),
+            "replication_data_paths": replication_paths,
+        }
         meta_path = paper_dir / "metadata.json"
-        meta_path.write_text(json.dumps(metadata, indent=2, ensure_ascii=False))
+        meta_path.write_text(json.dumps(enriched_meta, indent=2, ensure_ascii=False))
 
-        result["n_data"] = sum(
-            1 for _ in data_dest.rglob("*") if _.is_file()
-        )
-        result["n_code"] = sum(
-            1 for _ in code_dest.rglob("*") if _.is_file()
-        )
-
-        if result["n_data"] == 0:
+        result["n_data"] = n_data
+        result["n_code"] = n_repl
+        result["has_pdf"] = (paper_dir / "paper.pdf").exists()
+        if n_data == 0:
             result["status"] = "no_data"
-            result["message"] = "No data files found in package"
+            result["message"] = (
+                "No files in data/ matched audit replication_data_paths"
+            )
 
     except Exception as e:
         result["status"] = "error"
@@ -581,7 +660,26 @@ def main():
         "--only", nargs="*", default=None,
         help="Only process these DOI slugs (e.g., 10.1111_ajps.12599)",
     )
+    parser.add_argument(
+        "--audit", type=str, default=None,
+        help=(
+            "Path to the audit JSON. Defaults to "
+            "data/audit_replication_data_v2.json (falls back to v1)."
+        ),
+    )
     args = parser.parse_args()
+
+    # Load audit (v2 preferred, v1 fallback)
+    audit_path = Path(args.audit) if args.audit else (
+        AUDIT_V2_JSON if AUDIT_V2_JSON.exists() else AUDIT_V1_JSON
+    )
+    audit = load_audit(audit_path)
+    log.info(f"Loaded audit for {len(audit)} papers from {audit_path}")
+    if not audit:
+        log.error(
+            f"No audit data at {audit_path}. Run scripts/audit_replication_data_v2.py first."
+        )
+        return
 
     # Load CSVs
     log.info("Loading paper metadata...")
@@ -653,11 +751,29 @@ def main():
         log.info(f"Processing {slug}...")
         log.info(f"  Title: {meta['title'][:80]}")
 
+        # Audit may be keyed by DOI slug or raw DOI, depending on the audit
+        # version. Look up both.
+        audit_entry = audit.get(doi) or audit.get(slug)
+        if audit_entry is None:
+            log.warning(f"  No audit entry for {slug} / {doi}; skipping setup")
+            results.append({
+                "doi_slug": slug,
+                "status": "error",
+                "has_pdf": (PAPERS_DIR / slug / "paper.pdf").exists(),
+                "n_data": 0,
+                "n_code": 0,
+                "message": "no audit entry",
+                "had_audit": False,
+                "n_audit_paths": 0,
+            })
+            continue
+
         result = setup_paper_dir(
             doi_slug=slug,
             metadata=meta,
             package_path=pkg_path,
             output_dir=PAPERS_DIR,
+            audit_entry=audit_entry,
             force=args.force,
             dry_run=args.dry_run,
         )

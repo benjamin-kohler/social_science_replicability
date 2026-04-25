@@ -84,11 +84,19 @@ class OpencodeRunner(BaseReplicationRunner):
         else:
             setup_workspace(paper, paper_summary, workspace_dir, item_types=self.item_types)
 
-        # Build the inline prompt — single sentence pointing to TASK.md.
+        # Build the inline prompt — pointing to TASK.md with emphasis on completeness.
         if paper_direct:
-            prompt_text = "Read TASK.md for your full instructions. Start by examining paper.pdf."
+            prompt_text = (
+                "Read TASK.md for your full instructions. Start by examining paper.pdf. "
+                "You MUST replicate ALL tables — check table_templates/ for the full list "
+                "and do not stop until every template has a corresponding output JSON."
+            )
         else:
-            prompt_text = "Read TASK.md for your full instructions."
+            prompt_text = (
+                "Read TASK.md for your full instructions. "
+                "You MUST replicate ALL tables — check table_templates/ for the full list "
+                "and do not stop until every template has a corresponding output JSON."
+            )
 
         web_status = "ALLOWED" if self.allow_web_access else "BLOCKED"
         logger.info(

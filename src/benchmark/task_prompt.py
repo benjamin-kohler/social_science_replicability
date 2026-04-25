@@ -12,6 +12,22 @@ from .config import PaperSpec
 WORKSPACE_INSTRUCTIONS = """\
 Read TASK.md for your full instructions. Work only within this workspace.
 Exception: the data/ directory may be a symlink — use it freely as your dataset.
+
+RESTRICTIONS:
+- Do NOT search the internet, fetch web pages, or look up the paper or its results online.
+- Do NOT access any files outside this workspace and the data/ symlink.
+- Do NOT hard-code results. All values must be computed from the data by closely
+  following the methods described in TASK.md. If you cannot compute a value, leave it
+  as null — do not guess or copy numbers from any source.
+
+IMPORTANT: You must replicate ALL tables listed in TASK.md, not just the first one.
+Check table_templates/ for the full list. Write and execute a separate script for each
+table (table_1.py → table_1.json, table_2.py → table_2.json, etc.). Do NOT stop after
+completing one table — continue until every template has a corresponding output JSON.
+
+TIME MANAGEMENT: You have a strict time limit. Start writing and executing code immediately.
+Do NOT spend excessive time exploring data files — write a quick Python script to inspect
+data formats if needed, then move on to implementing the replication.
 """
 
 TASK_TEMPLATE = """# Replication Task
@@ -436,10 +452,15 @@ def build_task_prompt(
 
 
 def _write_opencode_config(workspace_dir: Path) -> None:
-    """Write opencode.json to auto-approve all tool calls (symlinks, bash, etc.)."""
-    (workspace_dir / "opencode.json").write_text(
-        json.dumps({"permission": {"*": "allow"}}, indent=2)
-    )
+    """Write opencode.json to auto-approve all tool calls except web access."""
+    config = {
+        "permission": {
+            "*": "allow",
+            "webfetch": "deny",
+            "websearch": "deny",
+        }
+    }
+    (workspace_dir / "opencode.json").write_text(json.dumps(config, indent=2))
 
 
 def setup_workspace(

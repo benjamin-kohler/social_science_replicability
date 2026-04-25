@@ -19,13 +19,13 @@ def main():
     )
     parser.add_argument(
         "--config", "-c",
-        default="config/benchmark_config.yaml",
-        help="Path to benchmark config YAML (default: config/benchmark_config.yaml)",
+        required=True,
+        help="Path to benchmark config YAML",
     )
     parser.add_argument(
         "--approaches",
         nargs="*",
-        choices=["freestyle", "structured", "claude-code", "codex", "swe-agent", "opencode"],
+        choices=["claude-code", "codex", "swe-agent", "opencode"],
         help="Override approaches to run (default: from config)",
     )
     parser.add_argument(

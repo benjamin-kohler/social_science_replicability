@@ -435,6 +435,7 @@ class Judge:
         replication_results: ReplicationResults,
         paper_results: PaperResults | None = None,
         replication_package_path: str | None = None,
+        workspace_dir: str | None = None,
     ) -> tuple[VerificationReport, ExplanationReport | None]:
         """Judge all replicated items.
 
@@ -445,6 +446,8 @@ class Judge:
             paper_results: Extracted original table values (for programmatic
                 comparison). If None, tables fall back to LLM-only judging.
             replication_package_path: Deprecated, kept for backward compat. Ignored.
+            workspace_dir: Path to workspace directory. Used to read table_templates/
+                to determine which tables were requested.
 
         Returns:
             (VerificationReport, ExplanationReport or None if all grades are A).
@@ -470,20 +473,59 @@ class Judge:
         item_verifications: list[ItemVerification] = []
         discrepancy_analyses: list[DiscrepancyAnalysis] = []
 
-        # Judge tables (programmatic if paper_results available)
+        # Determine expected tables from table_templates/ directory
+        from .artifact_parser import _infer_item_number
+        template_table_ids: list[str] = []
+        if workspace_dir:
+            tmpl_dir = Path(workspace_dir) / "table_templates"
+            if tmpl_dir.is_dir():
+                for tf in sorted(tmpl_dir.iterdir()):
+                    if tf.suffix == ".json":
+                        template_table_ids.append(
+                            _infer_item_number(tf.stem, "Table")
+                        )
+
+        # Build lookup of produced tables by table_number
+        produced_tables = {t.table_number: t for t in replication_results.tables}
+
+        # Judge tables: iterate over templates (what was asked), not produced tables
         if "table" not in self.item_types:
             logger.info("Skipping table evaluation (item_types filter)")
-        for gen_table in (replication_results.tables if "table" in self.item_types else []):
-            spec = table_specs.get(gen_table.table_number)
-            original_table = paper_results.get_table(gen_table.table_number) if paper_results else None
+        elif template_table_ids:
+            for table_id in template_table_ids:
+                gen_table = produced_tables.get(table_id)
+                spec = table_specs.get(table_id)
+                original_table = paper_results.get_table(table_id) if paper_results else None
 
-            verification, analysis = self._judge_table(
-                gen_table, spec, paper_text, page_images,
-                original_table=original_table,
-            )
-            item_verifications.append(verification)
-            if analysis:
-                discrepancy_analyses.append(analysis)
+                if gen_table is None:
+                    # Agent didn't produce this table — assign F
+                    logger.info(f"Table {table_id} not produced by agent — grading F")
+                    item_verifications.append(ItemVerification(
+                        item_id=table_id, item_type="table",
+                        grade=ReplicationGrade.F,
+                        comparison_notes="Table not produced by the replication agent.",
+                    ))
+                else:
+                    verification, analysis = self._judge_table(
+                        gen_table, spec, paper_text, page_images,
+                        original_table=original_table,
+                    )
+                    item_verifications.append(verification)
+                    if analysis:
+                        discrepancy_analyses.append(analysis)
+        else:
+            # Fallback: no templates found, use old behavior (iterate produced)
+            for gen_table in replication_results.tables:
+                spec = table_specs.get(gen_table.table_number)
+                original_table = paper_results.get_table(gen_table.table_number) if paper_results else None
+
+                verification, analysis = self._judge_table(
+                    gen_table, spec, paper_text, page_images,
+                    original_table=original_table,
+                )
+                item_verifications.append(verification)
+                if analysis:
+                    discrepancy_analyses.append(analysis)
 
         # Judge figures (LLM vision)
         if "figure" not in self.item_types:
@@ -564,9 +606,9 @@ class Judge:
                 return (
                     ItemVerification(
                         item_id=item_id, item_type="table",
-                        grade=ReplicationGrade.A,
+                        grade=ReplicationGrade.F,
                         comparison_notes=f"Non-numerical table ({len(original_table.cells)} text-only cells). "
-                        "Skipped from deterministic grading — structure match assumed.",
+                        "Skipped from deterministic grading — no numerical comparison possible.",
                         unverifiable=True,
                     ),
                     None,
@@ -995,15 +1037,17 @@ Respond with ONLY this JSON (no other text):
     def _calculate_overall_grade(
         verifications: list[ItemVerification],
     ) -> ReplicationGrade:
-        """Average verifiable item grades to an overall grade.
+        """Average verifiable non-F item grades to an overall grade.
 
-        Items flagged as ``unverifiable`` or ``judge_error`` are excluded from
-        the average so that execution failures or judge glitches don't drag
-        down the overall score.  If *all* items are excluded, the grade is F.
+        Items flagged as ``unverifiable``, ``judge_error``, or graded F are
+        excluded from the average.  F items represent missing output or
+        unverifiable tables and should not affect the overall score.
+        If *all* items are excluded (all F / unverifiable), the grade is F.
         """
         grades = [
             v.grade for v in verifications
             if not v.unverifiable and not v.judge_error
+            and v.grade != ReplicationGrade.F
         ]
         if not grades:
             return ReplicationGrade.F

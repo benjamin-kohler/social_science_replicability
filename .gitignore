@@ -25,6 +25,7 @@ wheels/
 
 # Jupyter Notebook
 .ipynb_checkpoints
+*.ipynb
 
 # IDEs
 .vscode/
@@ -44,3 +45,46 @@ reports/
 outputs/
 .env
 src/.env
+
+# Analysis outputs (regenerated locally; never committed)
+analysis_output/
+analysis_output_*/
+archive/analysis_output_*/
+
+# Logs
+*.log
+
+# Scratch / one-off scripts (never committed)
+scripts/scratch/
+
+# Helper scripts that should not ship in the public repo
+# (one-off audits, leakage checks, alt downloaders, OSF utilities, ad-hoc tests)
+scripts/helpers/
+
+# Archived legacy code / superseded entry points (kept on disk only)
+archive/
+
+# Internal docs not for the public repo
+docs/
+
+# Internal-only configs that hardcode textlab paths
+config/error_analysis_*.yaml
+config/i4rep_opensource_test.yaml
+
+# Dev fixtures with copyrighted PDFs (never commit)
+test_judge_example/
+test_judge_example2/
+
+# Claude Code project metadata
+.claude/
+
+# Leftover backup of the original code_JE folder (now scripts/error_analysis/)
+src/code_JE.zip
+
+# Error-analysis pipeline: ship code only, keep generated outputs + backups + secrets local
+scripts/error_analysis/plots/
+scripts/error_analysis/summaries/
+scripts/error_analysis/explainer_workspaces/
+scripts/error_analysis/*.bak_*
+scripts/error_analysis/.env
+scripts/error_analysis/.Rhistory

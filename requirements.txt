@@ -1,43 +1,37 @@
-# Agent & LLM
-langgraph>=0.2.0
+# LLM clients
 langchain-core>=0.3.0
-langchain-openai>=0.2.0
-langchain-anthropic>=0.2.0
 openai>=1.0.0
-anthropic>=0.20.0
 
-# PDF Processing
+# PDF parsing
 pymupdf>=1.23.0
 pdfplumber>=0.10.0
-pytesseract>=0.3.10
 
-# Data Analysis
+# Data analysis
 pandas>=2.1.0
 numpy>=1.24.0
-statsmodels>=0.14.0
 scipy>=1.11.0
 
-# Visualization
+# Plotting
 matplotlib>=3.8.0
 seaborn>=0.13.0
-plotly>=5.17.0
 
-# Code Execution
+# Sandboxed code execution (Jupyter kernels)
 jupyter-client>=8.0.0
 nbformat>=5.9.0
 ipykernel>=6.0.0
 
-# Utilities
+# Schemas / config
 pydantic>=2.5.0
 python-dotenv>=1.0.0
 pyyaml>=6.0.0
 
-# Optional: R Support
-# rpy2>=3.5.0
+# Token-efficient JSON encoding (used by guardrail/hardcoding classifier)
+toon>=0.2.0
 
-# Web Scraping
+# HTTP downloaders
+requests>=2.31.0
 seleniumbase>=4.25.0
 
-# Testing
+# Tests
 pytest>=7.4.0
 pytest-asyncio>=0.21.0

@@ -74,7 +74,6 @@ class ExtractorConfig(BaseModel):
 # ---------------------------------------------------------------------------
 
 PAPER_DIRECT_SUFFIX = "-paper"
-PAPER_DIRECT_INCOMPATIBLE = {"structured"}
 
 
 def parse_approach(approach: str) -> tuple[str, bool]:
@@ -83,7 +82,6 @@ def parse_approach(approach: str) -> tuple[str, bool]:
     Examples:
         "claude-code"       -> ("claude-code", False)
         "claude-code-paper" -> ("claude-code", True)
-        "freestyle-paper"   -> ("freestyle", True)
     """
     if approach.endswith(PAPER_DIRECT_SUFFIX):
         return approach[: -len(PAPER_DIRECT_SUFFIX)], True
@@ -96,8 +94,8 @@ class BenchmarkConfig(BaseModel):
     models: list[ModelSpec] = Field(..., description="Models to benchmark")
     papers: list[PaperSpec] = Field(..., description="Papers to replicate")
     approaches: list[str] = Field(
-        default=["freestyle", "structured"],
-        description="Approaches to benchmark: 'freestyle' and/or 'structured'",
+        default=["claude-code", "codex", "swe-agent", "opencode"],
+        description="Approaches to benchmark; subset of 'claude-code', 'codex', 'swe-agent', 'opencode'",
     )
     judge: JudgeConfig = Field(default_factory=JudgeConfig, description="Judge model config")
     extractor: ExtractorConfig = Field(default_factory=ExtractorConfig, description="Extractor model config")

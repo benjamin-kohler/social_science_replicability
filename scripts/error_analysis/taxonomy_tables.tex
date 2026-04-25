@@ -1,0 +1,146 @@
+% Taxonomy tables for replication error analysis
+% (1) Verdict categories used in consistency checks
+% (2) Failure type taxonomy (S-codes)
+% (3) Root cause taxonomy derived from consistency checks
+%
+% Required preamble:
+%   \usepackage{booktabs, xcolor, pifont, tikz}
+%   \newcommand{\cmark}{\textcolor{green!60!black}{\ding{51}}}
+%   \newcommand{\xmark}{\textcolor{red}{\ding{55}}}
+%   \newcommand{\omark}{\textcolor{orange!80!black}{$\circ$}}
+%   \newcommand{\stageData}{%
+%     \tikz[baseline=-0.6ex]\node[fill=gray!20,rounded corners=2pt,
+%       inner xsep=3pt,inner ysep=1.5pt,font=\scriptsize\sffamily]{%
+%       Data avail.};}
+%   \newcommand{\stagePC}{%
+%     \tikz[baseline=-0.6ex]\node[fill=blue!12,rounded corners=2pt,
+%       inner xsep=3pt,inner ysep=1.5pt,font=\scriptsize\sffamily]{%
+%       Code\,$\leftrightarrow$\,Paper};}
+%   \newcommand{\stagePS}{%
+%     \tikz[baseline=-0.6ex]\node[fill=orange!18,rounded corners=2pt,
+%       inner xsep=3pt,inner ysep=1.5pt,font=\scriptsize\sffamily]{%
+%       Paper\,$\leftrightarrow$\,Sum.};}
+%   \newcommand{\stageSA}{%
+%     \tikz[baseline=-0.6ex]\node[fill=green!15,rounded corners=2pt,
+%       inner xsep=3pt,inner ysep=1.5pt,font=\scriptsize\sffamily]{%
+%       Sum.\,$\leftrightarrow$\,Agent};}
+%
+
+% ------------------------------------------------------------------
+\begin{table}[ht]
+\centering
+\caption{Consistency-Check Verdict Categories}
+\label{tab:verdicts}
+\small
+\begin{tabular}{clp{5cm}p{4.5cm}}
+\toprule
+\textbf{Symbol} & \textbf{Verdict} & \textbf{Meaning} & \textbf{Example} \\
+\midrule
+\cmark & Consistent
+  & Both documents explicitly agree on this point, or are both silent on it.
+  & Paper says ``cluster at neighbourhood level''; summary says ``use neighbourhood cluster identifiers.'' \\[6pt]
+\xmark & Contradicts
+  & Direct conflict: document~A explicitly says X and document~B explicitly says Y, where $X \neq Y$.
+  & Paper says OLS; summary says IV estimator. \\[6pt]
+\omark & Omission
+  & The upstream document specifies X; the downstream document is silent on X.
+  & Paper states wild-cluster bootstrap; summary makes no mention of bootstrap inference. \\[6pt]
+? & Unclear
+  & Both documents are too vague to assess, or the relationship is genuinely ambiguous.
+  & Paper uses an undefined abbreviation; summary uses a different undefined abbreviation. \\
+\bottomrule
+\end{tabular}
+\medskip
+\begin{minipage}{\linewidth}
+\small\textit{Note:} Verdicts are assigned independently at each pipeline stage.
+The upstream document is always the one earlier in the pipeline
+(Stata code $\to$ paper $\to$ methodology summary $\to$ agent code).
+Both \xmark\ and \omark\ trigger root-cause attribution at that stage.
+\end{minipage}
+\end{table}
+
+
+% ------------------------------------------------------------------
+\begin{table}[ht]
+\centering
+\caption{Failure Type Taxonomy}
+\label{tab:failure_types}
+\begin{tabular}{llp{6cm}p{4cm}}
+\toprule
+\textbf{Code} & \textbf{Category} & \textbf{Description} & \textbf{Example} \\
+\midrule
+S1 & Wrong model specification
+   & Incorrect fixed effects, clustering level, or standard error type
+   & Clustering on household IDs where paper specifies neighbourhood clusters \\[4pt]
+S2 & Wrong estimator / inference
+   & Wrong estimator (e.g.\ OLS instead of IV) or missing inference procedure
+   & Wild-cluster bootstrap omitted; clustering at wrong level \\[4pt]
+S3 & Data source substitution
+   & Proxy or approximation used when the paper required a specific data source
+   & Survey-based vote proxies instead of official machine-level electoral returns \\[4pt]
+S4 & Wrong sample restriction
+   & Filter missing, condition incorrect, or wrong subset of observations selected
+   & Missing restriction to municipalities where incumbent ran for re-election \\[4pt]
+S5 & Wrong variable construction
+   & Outcome or predictor coded differently than the paper specifies
+   & Binary recoding applied with incorrect thresholds or reference category \\[4pt]
+S6 & Missing analysis component
+   & A required step entirely omitted
+   & No code implementing Table~4 electoral-outcomes analysis \\[4pt]
+S8 & Wrong data transformation / merge logic
+   & Incorrect join type, wrong merge key, mishandled duplicates, or flawed reshape
+   & Left join used instead of inner join, retaining unmatched observations \\[4pt]
+S9 & Wrong sequencing / order of operations
+   & Steps performed in incorrect order, changing results even if each step is individually correct
+   & Winsorizing applied before merge instead of after \\[4pt]
+S0 & Other
+   & A substantive difference that does not fit any category above
+   & (described in notes) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+
+% ------------------------------------------------------------------
+\begin{table}[ht]
+\centering
+\caption{Root Cause Taxonomy}
+\label{tab:root_causes}
+\small
+\begin{tabular}{p{2.0cm}p{2.3cm}p{2.3cm}p{2.3cm}p{2.8cm}p{2.5cm}}
+\toprule
+\textbf{Data} & \multicolumn{3}{c}{\textbf{Consistency checks}} & \textbf{Root cause} & \textbf{Interpretation} \\
+\cmidrule(lr){2-4}
+\stageData & \stagePC & \stagePS & \stageSA & & \\
+\midrule
+missing & --- & --- & --- &
+  Data not in package &
+  Required data absent; agent could not have succeeded regardless. \\[6pt]
+
+available & \xmark\ or \omark & --- & --- &
+  Paper under\-specified &
+  Stata code does something the paper never stated. \\[6pt]
+
+available & \cmark & \xmark\ or \omark & --- &
+  Summary gap &
+  Paper stated the specification; summariser omitted or misrepresented it. \\[6pt]
+
+available & \cmark & \cmark & \xmark\ or \omark &
+  Agent ignored instructions &
+  Summary correct; data present; agent deviated. \\[6pt]
+
+available & \cmark & \cmark & \cmark &
+  Unexplained &
+  All checks consistent; likely a cross-language default or artefact. \\
+\bottomrule
+\end{tabular}
+\medskip
+\begin{minipage}{\linewidth}
+\small\textit{Note:}
+Verdict symbols are defined in Table~\ref{tab:verdicts}.
+Data availability is assessed per divergence during the tracing step
+(not a separate LLM consistency check); ``---'' means subsequent checks
+are masked once a trigger is found at an upstream stage.
+The root cause is identified at the first non-consistent check.
+\end{minipage}
+\end{table}

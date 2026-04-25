@@ -3,20 +3,21 @@
 # run_i4rep_batch.sh — Run the replicability benchmark on all i4replication papers.
 #
 # Usage:
-#   # Inside tmux on textlab:
-#   tmux new -s i4rep2
+#   # On the machine running the benchmark (tmux recommended for long jobs):
+#   tmux new -s i4rep
 #   bash scripts/run_i4rep_batch.sh
 #
 #   # Override defaults via env vars:
+#   PROJECT_ROOT=/path/to/repo bash scripts/run_i4rep_batch.sh
 #   PARALLEL=3 APPROACHES="claude-code codex" bash scripts/run_i4rep_batch.sh
 #   PAPERS="10.1111_ajps.12599 10.1086_714765" bash scripts/run_i4rep_batch.sh
 
 set -euo pipefail
 
 # ---------------------------------------------------------------------------
-# Configuration — hardcoded to the correct project path on textlab
+# Configuration
 # ---------------------------------------------------------------------------
-PROJECT_ROOT="/data/individual/benjamin/social_science_replicability"
+PROJECT_ROOT="${PROJECT_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 PAPERS_DIR="${PAPERS_DIR:-$PROJECT_ROOT/data/i4replicate/papers}"
 RESULTS_DIR="${RESULTS_DIR:-$PROJECT_ROOT/data/i4replicate/results}"
 CONFIG_DIR="$PROJECT_ROOT/config"

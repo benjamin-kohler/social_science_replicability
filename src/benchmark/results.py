@@ -25,7 +25,7 @@ class RunArtifacts(BaseModel):
     exit_code: int = Field(default=0, description="Process exit code")
     duration_seconds: float = Field(default=0.0, description="Wall-clock duration")
     replication_results: Optional[ReplicationResults] = Field(
-        default=None, description="Parsed replication results (direct for structured, parsed for freestyle)"
+        default=None, description="Parsed replication results"
     )
     usage: Optional[dict] = Field(
         default=None,
@@ -53,7 +53,7 @@ class SingleRunResult(BaseModel):
 
     model: ModelSpec = Field(..., description="Model used")
     paper: PaperSpec = Field(..., description="Paper replicated")
-    approach: str = Field(..., description="Approach: 'freestyle' or 'structured'")
+    approach: str = Field(..., description="Approach: one of 'claude-code', 'codex', 'swe-agent', 'opencode'")
     artifacts: RunArtifacts = Field(..., description="Run artifacts")
     evaluation: Optional[EvaluationResult] = Field(
         default=None, description="Judge evaluation (None during replication-only phase)"

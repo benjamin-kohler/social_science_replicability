@@ -32,13 +32,11 @@ from .config import (
     ModelSpec,
     PaperSpec,
     parse_approach,
-    PAPER_DIRECT_INCOMPATIBLE,
 )
 from .evaluator import SharedEvaluator
 from .claude_code_runner import ClaudeCodeRunner
 from .codex_runner import CodexRunner
 from .opencode_runner import OpencodeRunner
-from .structured_runner import StructuredRunner
 from .swe_agent_runner import SweAgentRunner
 from .results import (
     BenchmarkResults,
@@ -88,10 +86,6 @@ class BenchmarkRunner:
             item_types=config.item_types,
         )
         self._runners: dict[str, BaseReplicationRunner] = {
-            "freestyle": OpencodeRunner(
-                opencode_binary=config.opencode_binary, **_common,
-            ),
-            "structured": StructuredRunner(**_common),
             "claude-code": ClaudeCodeRunner(
                 claude_binary=config.claude_code_binary, **_common,
             ),
@@ -118,15 +112,9 @@ class BenchmarkRunner:
                 max_turns=config.explainer_max_turns,
             )
 
-    # -- Convenience aliases for backward compat with tests that access
-    #    runner.opencode_runner, runner.evaluator, etc. directly.
     @property
     def opencode_runner(self) -> OpencodeRunner:
-        return self._runners["freestyle"]  # type: ignore[return-value]
-
-    @property
-    def structured_runner(self) -> StructuredRunner:
-        return self._runners["structured"]  # type: ignore[return-value]
+        return self._runners["opencode"]  # type: ignore[return-value]
 
     @property
     def claude_code_runner(self) -> ClaudeCodeRunner:
@@ -368,13 +356,6 @@ class BenchmarkRunner:
         if self._has_existing_artifacts(workspace):
             logger.info(f"Resuming: reusing existing artifacts in {workspace}")
             return self._load_existing_artifacts(workspace)
-
-        if is_paper_direct and base_approach in PAPER_DIRECT_INCOMPATIBLE:
-            raise ValueError(
-                f"Approach '{approach}' is not supported: "
-                f"'{base_approach}' requires structured PaperSummary input "
-                f"and cannot work from a raw PDF."
-            )
 
         runner = self._runners.get(base_approach)
         if runner is None:
