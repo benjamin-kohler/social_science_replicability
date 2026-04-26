@@ -46,11 +46,9 @@ config/                opencode.json (provider config for opencode CLI)
 tests/                 Unit tests for parsers, schemas, executor
 ```
 
-## Run the pipeline on your own paper
+## Run the pipeline on your own
 
-The benchmark also works on a single paper — useful if you want to see how
-agents reproduce something outside our corpus (e.g. your own work, or a
-paper you're refereeing).
+The benchmark also works on a single paper.
 
 ### 1. Lay out the paper directory
 
@@ -69,18 +67,24 @@ data/mypapers/papers/my_paper/
                                # The replicator never sees this.
 ```
 
-If you start from a downloaded openICPSR / Dataverse / Zenodo replication
-package, run the GPT audit to split the package into raw-data vs.
-intermediate-output and have it auto-build the `data/` and
-`replication_package/` directories for you:
+If you start from a downloaded replication package (openICPSR, Dataverse,
+Zenodo, or any zip / directory), run the GPT audit on it directly. The
+audit accepts a full path to a single package — zip or directory — and
+classifies every file as raw-data, intermediary, final, code, results,
+or support, then identifies which files the replicator actually needs
+as inputs:
 
 ```bash
-# Drop the unzipped package into data/openicpsr_aea/<your_collection>/
-python scripts/audit_replication_data_v2.py --only <your_collection>
-python scripts/setup_i4rep_batch.py \
-    --audit data/audit_replication_data_v2.json \
-    --output-dir data/mypapers
+python scripts/audit_replication_data_v2.py \
+    --package /path/to/your_package.zip \
+    --paper-id my_paper
+# Writes data/audit_replication_data_v2.json (or wherever --output-dir points).
 ```
+
+You can then consume that JSON when laying out
+`data/mypapers/papers/my_paper/` — copy the files listed under
+`replication_data_paths` into `data/`, and the rest into
+`replication_package/`.
 
 ### 2. Configure API keys and install the CLI agents
 

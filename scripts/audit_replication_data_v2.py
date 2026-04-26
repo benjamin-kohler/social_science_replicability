@@ -14,6 +14,11 @@ Usage:
   python scripts/audit_replication_data_v2.py --papers 209827 209484  # specific papers
   python scripts/audit_replication_data_v2.py --concurrency 5     # limit parallel requests
   python scripts/audit_replication_data_v2.py --force              # re-audit all (ignore cache)
+
+  # Audit a single replication package (zip or directory) at any path:
+  python scripts/audit_replication_data_v2.py --package /path/to/package.zip
+  python scripts/audit_replication_data_v2.py --package ~/Downloads/my_paper_repo \\
+      --paper-id my_paper
 """
 
 import argparse
@@ -24,6 +29,8 @@ import json
 import logging
 import os
 import subprocess
+import tempfile
+import zipfile
 from pathlib import Path
 from typing import Literal
 
@@ -321,14 +328,32 @@ async def audit_paper(
     collection: str,
     semaphore: asyncio.Semaphore,
 ) -> DataAuditResultV2:
-    """Audit a single paper's replication package using gpt-5-mini."""
+    """Audit a single paper's replication package using gpt-5-mini.
+
+    Two layouts are supported:
+
+    1. Pipeline layout (collection ∈ {postcutoff, precutoff, i4rep}):
+       ``paper_dir`` contains ``data/`` and ``replication_package/`` subdirs
+       that have already been split by ``setup_i4rep_batch.py``. The
+       original (unsplit) ZIP listing is fetched from the corresponding
+       collection's zips directory.
+    2. Single-package layout (collection == "single"):
+       ``paper_dir`` IS the unsplit replication package (or an extracted
+       copy of one). No data/replication_package split has happened; the
+       audit runs over the whole tree.
+    """
     async with semaphore:
         log.info(f"Auditing {paper_id} ({collection})")
 
         # 1. Collect file trees
-        data_tree = collect_file_tree(paper_dir / "data")
-        repl_tree = collect_file_tree(paper_dir / "replication_package")
-        zip_tree = collect_zip_tree(paper_id, collection)
+        if collection == "single":
+            data_tree = "(no split — package is the whole directory)"
+            repl_tree = "(no split — package is the whole directory)"
+            zip_tree = collect_file_tree(paper_dir)
+        else:
+            data_tree = collect_file_tree(paper_dir / "data")
+            repl_tree = collect_file_tree(paper_dir / "replication_package")
+            zip_tree = collect_zip_tree(paper_id, collection)
 
         # 2. Find READMEs
         readmes = find_readmes(paper_dir)
@@ -442,12 +467,51 @@ For this replication package:
 # ---------------------------------------------------------------------------
 
 
+def _resolve_single_package(package_path: Path, paper_id: str | None,
+                            tmp_holder: list) -> tuple[str, Path]:
+    """Resolve a --package argument to (paper_id, paper_dir).
+
+    If ``package_path`` is a zip, it is extracted into a temp directory whose
+    lifetime is tied to ``tmp_holder`` (the caller appends the
+    TemporaryDirectory so it isn't garbage-collected mid-audit).
+    """
+    if not package_path.exists():
+        raise FileNotFoundError(f"--package path not found: {package_path}")
+
+    derived_id = package_path.stem
+    if package_path.is_dir():
+        return (paper_id or derived_id, package_path)
+
+    if package_path.suffix.lower() == ".zip":
+        tmp = tempfile.TemporaryDirectory(prefix="audit_pkg_")
+        tmp_holder.append(tmp)
+        extract_root = Path(tmp.name)
+        with zipfile.ZipFile(package_path) as zf:
+            zf.extractall(extract_root)
+        # If the zip contains a single top-level directory, descend into it
+        entries = list(extract_root.iterdir())
+        if len(entries) == 1 and entries[0].is_dir():
+            extract_root = entries[0]
+        return (paper_id or derived_id, extract_root)
+
+    raise ValueError(
+        f"--package must be a directory or .zip (got: {package_path})"
+    )
+
+
 async def main():
     parser = argparse.ArgumentParser(description="Audit replication packages (v2: file-level classification)")
     parser.add_argument("--only", choices=["postcutoff", "precutoff", "i4rep"], default=None,
                         help="Only audit one collection")
     parser.add_argument("--papers", nargs="*", default=None,
                         help="Only audit specific paper IDs")
+    parser.add_argument("--package", type=str, default=None,
+                        help="Audit a single replication package at this path "
+                             "(zip file or directory). Bypasses the collection-based "
+                             "lookup; output is keyed by --paper-id (or the path stem).")
+    parser.add_argument("--paper-id", type=str, default=None,
+                        help="Paper ID to use when --package is supplied "
+                             "(default: filename stem of the package).")
     parser.add_argument("--concurrency", type=int, default=10,
                         help="Max concurrent API requests (default: 10)")
     parser.add_argument("--output-dir", type=str, default=None,
@@ -478,24 +542,32 @@ async def main():
 
     # Collect papers to audit
     papers: list[tuple[str, Path, str]] = []  # (paper_id, paper_dir, collection)
+    tmp_dirs: list = []  # holds TemporaryDirectory objects for --package mode
 
-    if args.only not in ("i4rep", "precutoff") and POSTCUTOFF_PAPERS.exists():
-        for d in sorted(POSTCUTOFF_PAPERS.iterdir()):
-            if d.is_dir():
-                papers.append((d.name, d, "postcutoff"))
+    if args.package:
+        if args.only or args.papers:
+            log.warning("--only / --papers are ignored when --package is supplied")
+        pid, pdir = _resolve_single_package(Path(args.package).expanduser().resolve(),
+                                            args.paper_id, tmp_dirs)
+        papers.append((pid, pdir, "single"))
+    else:
+        if args.only not in ("i4rep", "precutoff") and POSTCUTOFF_PAPERS.exists():
+            for d in sorted(POSTCUTOFF_PAPERS.iterdir()):
+                if d.is_dir():
+                    papers.append((d.name, d, "postcutoff"))
 
-    if args.only not in ("postcutoff", "i4rep") and PRECUTOFF_PAPERS.exists():
-        for d in sorted(PRECUTOFF_PAPERS.iterdir()):
-            if d.is_dir():
-                papers.append((d.name, d, "precutoff"))
+        if args.only not in ("postcutoff", "i4rep") and PRECUTOFF_PAPERS.exists():
+            for d in sorted(PRECUTOFF_PAPERS.iterdir()):
+                if d.is_dir():
+                    papers.append((d.name, d, "precutoff"))
 
-    if args.only not in ("postcutoff", "precutoff") and I4REP_PAPERS.exists():
-        for d in sorted(I4REP_PAPERS.iterdir()):
-            if d.is_dir():
-                papers.append((d.name, d, "i4rep"))
+        if args.only not in ("postcutoff", "precutoff") and I4REP_PAPERS.exists():
+            for d in sorted(I4REP_PAPERS.iterdir()):
+                if d.is_dir():
+                    papers.append((d.name, d, "i4rep"))
 
-    if args.papers:
-        papers = [(pid, pdir, col) for pid, pdir, col in papers if pid in args.papers]
+        if args.papers:
+            papers = [(pid, pdir, col) for pid, pdir, col in papers if pid in args.papers]
 
     # Filter out already-audited papers
     to_audit = [(pid, pdir, col) for pid, pdir, col in papers if pid not in existing]
