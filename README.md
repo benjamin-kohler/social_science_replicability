@@ -44,3 +44,161 @@ scripts/               Setup, batch runners, analysis
 
 config/                opencode.json (provider config for opencode CLI)
 tests/                 Unit tests for parsers, schemas, executor
+```
+
+## Run the pipeline on your own paper
+
+The benchmark also works on a single paper — useful if you want to see how
+agents reproduce something outside our corpus (e.g. your own work, or a
+paper you're refereeing).
+
+### 1. Lay out the paper directory
+
+Create one directory per paper inside `data/mypapers/papers/<paper_id>/`:
+
+```
+data/mypapers/papers/my_paper/
+├── paper.pdf                  # The published PDF
+├── data/                      # Raw input data only — *not* pre-computed
+│                              # tables, regression output, or final results.
+│                              # Anything in here is what the agent gets to
+│                              # see; everything else is hidden.
+└── replication_package/       # (Optional) Original code + full package.
+                               # Used only for the post-hoc explainer
+                               # comparing agent code to the authors' code.
+                               # The replicator never sees this.
+```
+
+If you start from a downloaded openICPSR / Dataverse / Zenodo replication
+package, run the GPT audit to split the package into raw-data vs.
+intermediate-output and have it auto-build the `data/` and
+`replication_package/` directories for you:
+
+```bash
+# Drop the unzipped package into data/openicpsr_aea/<your_collection>/
+python scripts/audit_replication_data_v2.py --only <your_collection>
+python scripts/setup_i4rep_batch.py \
+    --audit data/audit_replication_data_v2.json \
+    --output-dir data/mypapers
+```
+
+### 2. Configure API keys and install the CLI agents
+
+```bash
+cp .env.example .env
+# Edit .env: OPENAI_API_KEY, ANTHROPIC_API_KEY (and optionally OPENROUTER_API_KEY).
+```
+
+The benchmark drives external CLI agents as subprocesses — install whichever
+you want to compare:
+
+| Agent | Install | Models |
+|---|---|---|
+| Claude Code | `npm i -g @anthropic-ai/claude-code` | `claude-opus-4-6`, `claude-sonnet-4-6`, … |
+| OpenAI Codex | `npm i -g @openai/codex` | `gpt-5.4`, `gpt-5.3-codex`, … |
+| opencode | <https://opencode.ai/install> | any provider in `config/opencode.json` |
+| mini-SWE-agent | `pip install mini-swe-agent` | any chat model |
+
+### 3. Write a one-paper config YAML
+
+Save as `config/my_paper.yaml`:
+
+```yaml
+models:
+  - provider: anthropic
+    model_name: claude-opus-4-6
+    api_key_env: ANTHROPIC_API_KEY
+    approaches: [claude-code]
+
+  - provider: openai
+    model_name: gpt-5.4
+    api_key_env: OPENAI_API_KEY
+    approaches: [codex, opencode]
+
+papers:
+  - paper_id: my_paper
+    pdf_path: data/mypapers/papers/my_paper/paper.pdf
+    data_path: data/mypapers/papers/my_paper/data
+    replication_package_path: data/mypapers/papers/my_paper/replication_package
+
+approaches: [claude-code, codex, opencode]
+
+judge:
+  provider: openai
+  model_name: gpt-5-mini
+  use_vision: true
+  comparator_cli_tool: claude-code
+  comparator_model: claude-sonnet-4-6
+
+extractor:
+  model: gpt-5-mini
+  use_vision: true
+
+output_dir: data/mypapers/results
+timeout_seconds: 7200
+allow_web_access: false
+item_types: [table]
+```
+
+### 4. Run the benchmark
+
+```bash
+python -m src.benchmark_cli --config config/my_paper.yaml
+```
+
+Each `(model × approach)` combination produces an isolated workspace.
+Workspace contents:
+
+```
+data/mypapers/results/my_paper/<model>_my_paper_<approach>/
+├── workspace/                 # What the agent saw — TASK.md, data, agent code
+├── methodology_summary.json   # PaperSummary the extractor produced (shared)
+└── verification_report.json   # Cell-level grades A–F + numerical comparisons
+```
+
+`verification_report.json` is the headline output — overall grade, item
+grades, and a per-cell breakdown. The agent's generated Python code lives
+in `workspace/*.py`.
+
+### 5. Run the explainer pipeline
+
+The **explainer pipeline** in `scripts/error_analysis/` runs four
+cross-checks per failing cell — diffing agent code against the authors'
+original Stata/R/Python code to attribute each error to one of:
+
+- *Data missing* — the required input wasn't in `data/`
+- *Original code error* — the authors' code itself can't reproduce the value
+- *Paper-vs-code* — the paper text disagrees with the original code
+- *Agent error* — the agent diverged where the original code is correct
+
+Run all four stages on your results directory:
+
+```bash
+PROJECT_ROOT=$(pwd) \
+PAPERS_DIR=data/mypapers/papers \
+RESULTS_DIR=data/mypapers/results \
+bash scripts/error_analysis/run_pipeline_all.sh
+```
+
+This drives, in order:
+
+1. `00_prep_setup.py` — copies each paper × agent run into a clean
+   `explainer_workspaces/<paper>/<agent>/` layout (agent code on one
+   side, original replication package on the other).
+2. `01_trace_failures.py` — for each failing cell, asks an LLM to
+   identify the specific lines in agent code and original code that
+   produce the divergent value.
+3. `02_detect_error_source.py` — runs targeted consistency checks
+   (paper vs. summary, summary vs. agent, paper vs. original code,
+   data availability) to attribute a root cause.
+4. `03_summarize_errors.py` — emits a per-paper LaTeX table of all
+   divergences with their attributed root causes.
+5. `04_overview_stats.py` — aggregates across all papers and agents
+   into the cross-paper plots (`root_causes_*`, `divergence_types_*`)
+   reported in the paper.
+
+Outputs land in `scripts/error_analysis/explainer_workspaces/`,
+`scripts/error_analysis/summaries/` (LaTeX), and
+`scripts/error_analysis/plots/` (PDFs + PNGs). The pipeline is
+incremental — re-running skips steps already completed for unchanged
+inputs.
