@@ -77,6 +77,7 @@ def _run_claude_code(
     timeout: int,
     api_key: str | None = None,
 ) -> tuple[str, str, int]:
+    prompt = prompt.replace(chr(0), '')  # strip embedded null bytes from VR data
     cmd = [
         "claude", "-p",
         "--output-format", "json",
@@ -115,6 +116,7 @@ def _run_codex(
     timeout: int,
     api_key: str | None = None,
 ) -> tuple[str, str, int]:
+    prompt = prompt.replace(chr(0), '')  # strip embedded null bytes from VR data
     cmd = [
         "codex",
         "exec",

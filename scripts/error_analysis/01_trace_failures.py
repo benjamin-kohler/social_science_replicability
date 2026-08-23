@@ -106,6 +106,7 @@ def _run_codex(workspace, prompt, model, max_turns, timeout, api_key=None):
 
 
 def _run_agent(workspace, prompt, runner, model, max_turns, timeout, api_key=None):
+    prompt = prompt.replace(chr(0), '')  # strip embedded null bytes from VR data
     if runner == "claude-code":
         return _run_claude_code(workspace, prompt, model, max_turns, timeout, api_key)
     return _run_codex(workspace, prompt, model, max_turns, timeout, api_key)

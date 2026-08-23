@@ -562,8 +562,70 @@ def _load_extracted_table_row_types(run_dir: Path) -> dict[tuple[str, str, str],
     return lookup
 
 
-def _load_replicator_se_values(run_dir: Path) -> dict[tuple[str, str, str], float | None]:
-    """Build lookup (table_id, coeff_row_label, column_label) -> replicated SE value."""
+def _coefficient_metadata_by_position(
+    table_id: str, cells: list,
+) -> dict[tuple[str, str, str, int], dict[str, float | int | None]]:
+    """Index coefficient SEs/stars without collapsing repeated row labels.
+
+    Tables with panels often repeat the same coefficient label in the same
+    column. A three-part ``(table, row_label, column_label)`` key therefore
+    overwrites earlier panels. The fourth key component is the coefficient's
+    zero-based occurrence among cells with the same labels, in table order.
+
+    Prefer the extractor's explicit ``row_index``/``col_index`` and ``refers_to``
+    links when finding a coefficient's SE. Older artifacts without those fields
+    fall back to the immediately following cell in the same column.
+    """
+    if cells and isinstance(cells[0], list):
+        cells = [c for row in cells for c in row if isinstance(c, dict)]
+    else:
+        cells = [c for c in cells if isinstance(c, dict)]
+
+    se_by_parent_position = {}
+    for cell in cells:
+        if cell.get("row_type") != "se" and not cell.get("is_standard_error"):
+            continue
+        parent_row = cell.get("refers_to")
+        col_index = cell.get("col_index")
+        if parent_row is not None and col_index is not None:
+            se_by_parent_position[(parent_row, col_index)] = cell.get("numeric_value")
+
+    by_col: dict[str, list[dict]] = {}
+    for cell in cells:
+        by_col.setdefault(cell.get("column_label", ""), []).append(cell)
+
+    occurrence_counts: Counter = Counter()
+    lookup = {}
+    for col, col_cells in by_col.items():
+        for i, cell in enumerate(col_cells):
+            if cell.get("row_type") != "coefficient":
+                continue
+
+            base_key = (table_id, cell.get("row_label", ""), col)
+            occurrence = occurrence_counts[base_key]
+            occurrence_counts[base_key] += 1
+
+            se_val = None
+            row_index = cell.get("row_index")
+            col_index = cell.get("col_index")
+            if row_index is not None and col_index is not None:
+                se_val = se_by_parent_position.get((row_index, col_index))
+            if se_val is None and i + 1 < len(col_cells):
+                next_cell = col_cells[i + 1]
+                if (next_cell.get("row_type") == "se"
+                        or next_cell.get("is_standard_error")):
+                    se_val = next_cell.get("numeric_value")
+
+            stars = cell.get("significance_stars", 0)
+            lookup[base_key + (occurrence,)] = {
+                "se": se_val,
+                "stars": int(stars) if stars is not None else 0,
+            }
+    return lookup
+
+
+def _load_replicator_se_values(run_dir: Path) -> dict[tuple[str, str, str, int], float | None]:
+    """Build occurrence-aware lookup for replicated coefficient SE values."""
     se_lookup = {}
     for base in [
         # run_dir / "explainer_workspace" / "replicator_outputs",
@@ -575,34 +637,19 @@ def _load_replicator_se_values(run_dir: Path) -> dict[tuple[str, str, str], floa
             if not data or "cells" not in data:
                 continue
             table_id = data.get("table_id", "")
-            cells = data["cells"]
-            if cells and isinstance(cells[0], list):
-                cells = [c for row in cells for c in row if isinstance(c, dict)]
-            by_col: dict[str, list[dict]] = {}
-            for c in cells:
-                if not isinstance(c, dict):
-                    continue
-                col = c.get("column_label", "")
-                by_col.setdefault(col, []).append(c)
-            for col, col_cells in by_col.items():
-                for i, c in enumerate(col_cells):
-                    if c.get("row_type") == "coefficient" and i + 1 < len(col_cells):
-                        next_c = col_cells[i + 1]
-                        if next_c.get("row_type") == "se" or next_c.get("is_standard_error"):
-                            se_val = next_c.get("numeric_value")
-                            coeff_row_label = c.get("row_label", "")
-                            se_lookup[(table_id, coeff_row_label, col)] = se_val
+            metadata = _coefficient_metadata_by_position(table_id, data["cells"])
+            se_lookup.update({key: value["se"] for key, value in metadata.items()})
         break
     return se_lookup
 
 
-def _load_original_se_values(results_dir: Path, paper_slug: str) -> dict[tuple[str, str, str], float | None]:
-    """Build lookup (table_id, coeff_row_label, column_label) -> original SE value.
+def _load_original_se_values(results_dir: Path, paper_slug: str) -> dict[tuple[str, str, str, int], float | None]:
+    """Build occurrence-aware lookup for original coefficient SE values.
 
     Reads from the unblinded {paper}_results.json (extractor output with actual
     values), not the blinded workspace summary.
     """
-    se_lookup: dict[tuple[str, str, str], float | None] = {}
+    se_lookup: dict[tuple[str, str, str, int], float | None] = {}
     results_path = results_dir / paper_slug / "summaries" / f"{paper_slug}_results.json"
     if not results_path.exists():
         return se_lookup
@@ -611,27 +658,12 @@ def _load_original_se_values(results_dir: Path, paper_slug: str) -> dict[tuple[s
         return se_lookup
     for table in data.get("tables", []):
         table_id = table.get("table_id", "")
-        cells = table.get("cells", [])
-        if cells and isinstance(cells[0], list):
-            cells = [c for row in cells for c in row if isinstance(c, dict)]
-        by_col: dict[str, list[dict]] = {}
-        for c in cells:
-            if not isinstance(c, dict):
-                continue
-            col = c.get("column_label", "")
-            by_col.setdefault(col, []).append(c)
-        for col, col_cells in by_col.items():
-            for i, c in enumerate(col_cells):
-                if c.get("row_type") == "coefficient" and i + 1 < len(col_cells):
-                    next_c = col_cells[i + 1]
-                    if next_c.get("row_type") == "se" or next_c.get("is_standard_error"):
-                        se_val = next_c.get("numeric_value")
-                        coeff_row_label = c.get("row_label", "")
-                        se_lookup[(table_id, coeff_row_label, col)] = se_val
+        metadata = _coefficient_metadata_by_position(table_id, table.get("cells", []))
+        se_lookup.update({key: value["se"] for key, value in metadata.items()})
     return se_lookup
 
 
-def _load_original_significance(results_dir: Path, paper_slug: str) -> dict[tuple[str, str, str], int]:
+def _load_original_significance(results_dir: Path, paper_slug: str) -> dict[tuple[str, str, str, int], int]:
     lookup = {}
     summaries_dir = results_dir / paper_slug / "summaries"
     results_json = summaries_dir / f"{paper_slug}_results.json"
@@ -642,16 +674,12 @@ def _load_original_significance(results_dir: Path, paper_slug: str) -> dict[tupl
         return lookup
     for table in data.get("tables", []):
         table_id = table.get("table_id", "")
-        for cell in table.get("cells", []):
-            if cell.get("row_type") != "coefficient":
-                continue
-            key = (table_id, cell.get("row_label", ""), cell.get("column_label", ""))
-            stars = cell.get("significance_stars", 0)
-            lookup[key] = int(stars) if stars is not None else 0
+        metadata = _coefficient_metadata_by_position(table_id, table.get("cells", []))
+        lookup.update({key: value["stars"] for key, value in metadata.items()})
     return lookup
 
 
-def _load_replicator_significance(run_dir: Path) -> dict[tuple[str, str, str], int]:
+def _load_replicator_significance(run_dir: Path) -> dict[tuple[str, str, str, int], int]:
     lookup = {}
     for base in [
         # run_dir / "explainer_workspace" / "replicator_outputs",
@@ -663,17 +691,8 @@ def _load_replicator_significance(run_dir: Path) -> dict[tuple[str, str, str], i
             if not data or "cells" not in data:
                 continue
             table_id = data.get("table_id", "")
-            cells = data["cells"]
-            if cells and isinstance(cells[0], list):
-                cells = [c for row in cells for c in row if isinstance(c, dict)]
-            for c in cells:
-                if not isinstance(c, dict):
-                    continue
-                if c.get("row_type") != "coefficient":
-                    continue
-                key = (table_id, c.get("row_label", ""), c.get("column_label", ""))
-                stars = c.get("significance_stars", 0)
-                lookup[key] = int(stars) if stars is not None else 0
+            metadata = _coefficient_metadata_by_position(table_id, data["cells"])
+            lookup.update({key: value["stars"] for key, value in metadata.items()})
         break
     return lookup
 
@@ -774,6 +793,7 @@ def load_results(results_dir: Path, papers_dir: Path | None = None) -> tuple[pd.
                 mean_pct = np.nan
                 if tc and "cell_comparisons" in tc:
                     cells = tc["cell_comparisons"]
+                    coefficient_occurrences: Counter = Counter()
                     n_cells = len(cells)
                     pct_diffs = [c.get("percent_difference") for c in cells
                                  if c.get("percent_difference") is not None]
@@ -804,7 +824,10 @@ def load_results(results_dir: Path, papers_dir: Path | None = None) -> tuple[pd.
                         sig_stars_orig = None
                         sig_stars_repl = None
                         if row_type == "coefficient":
-                            se_key = (item_id, cell_row_label, cell_col_label)
+                            se_key_base = (item_id, cell_row_label, cell_col_label)
+                            occurrence = coefficient_occurrences[se_key_base]
+                            coefficient_occurrences[se_key_base] += 1
+                            se_key = se_key_base + (occurrence,)
                             orig_se = original_se_lookup.get(se_key)
                             repl_se = replicator_se_lookup.get(se_key)
                             sig_stars_orig = orig_sig_lookup.get(se_key)
@@ -983,6 +1006,17 @@ def load_results(results_dir: Path, papers_dir: Path | None = None) -> tuple[pd.
                     total_tokens = oc_usage["total_tokens"]
                     total_cost_usd = oc_usage.get("total_cost_usd", 0)
 
+            # A release bundle cannot ship the user's OpenCode database.  The
+            # release builder freezes the already-audited per-run telemetry in
+            # a small JSON sidecar so analysis remains byte-for-byte portable.
+            release_usage = _load_json(run_dir / "release_usage.json")
+            if release_usage:
+                prompt_tokens = release_usage.get("prompt_tokens", prompt_tokens)
+                completion_tokens = release_usage.get("completion_tokens", completion_tokens)
+                total_tokens = release_usage.get("total_tokens", total_tokens)
+                total_cost_usd = release_usage.get("total_cost_usd", total_cost_usd)
+                duration = release_usage.get("duration_seconds", duration)
+
             # Paper-level data stats
             n_datasets = 0
             total_data_bytes = 0
@@ -991,12 +1025,20 @@ def load_results(results_dir: Path, papers_dir: Path | None = None) -> tuple[pd.
             original_language = "Unknown"
             original_languages_all = []
             if papers_dir:
-                paper_data_dir = papers_dir / paper_slug / "data"
-                n_datasets, total_data_bytes = _dataset_stats(paper_data_dir)
-                meta = _load_json(papers_dir / paper_slug / "metadata.json")
-                if meta and "title" in meta:
-                    paper_title = meta["title"]
-                original_language, original_languages_all = _classify_original_language(papers_dir / paper_slug)
+                release_meta = _load_json(papers_dir / paper_slug / "release_metadata.json")
+                if release_meta:
+                    n_datasets = int(release_meta.get("n_datasets", 0))
+                    total_data_bytes = int(release_meta.get("total_data_size_bytes", 0))
+                    paper_title = release_meta.get("paper_title", paper_title)
+                    original_language = release_meta.get("original_language", "Unknown")
+                    original_languages_all = release_meta.get("original_languages_all", [])
+                else:
+                    paper_data_dir = papers_dir / paper_slug / "data"
+                    n_datasets, total_data_bytes = _dataset_stats(paper_data_dir)
+                    meta = _load_json(papers_dir / paper_slug / "metadata.json")
+                    if meta and "title" in meta:
+                        paper_title = meta["title"]
+                    original_language, original_languages_all = _classify_original_language(papers_dir / paper_slug)
 
             run_rows.append({
                 "paper_slug": paper_slug,
@@ -1076,6 +1118,71 @@ def load_results(results_dir: Path, papers_dir: Path | None = None) -> tuple[pd.
 
     print(f"Loaded {len(df_runs)} runs, {len(df_items)} items, {len(df_cells)} cells")
     return df_runs, df_items, df_cells
+
+
+def validate_sample_manifest(df_runs: pd.DataFrame, manifest_path: Path) -> None:
+    """Fail if the loaded production run set differs from a pinned manifest."""
+    manifest = _load_json(manifest_path)
+    if not manifest:
+        raise ValueError(f"Could not read sample manifest: {manifest_path}")
+
+    papers = set(manifest.get("paper_ids", []))
+    combinations = set(manifest.get("approach_model_combinations", []))
+    if not papers or not combinations:
+        raise ValueError("Sample manifest must list paper_ids and approach_model_combinations")
+
+    per_paper = manifest.get("paper_specific_included_approach_model_combinations", {})
+    unknown_papers = set(per_paper) - papers
+    invalid_combinations = {
+        (paper, combo)
+        for paper, paper_combinations in per_paper.items()
+        for combo in paper_combinations
+        if combo not in combinations
+    }
+    if unknown_papers or invalid_combinations:
+        raise ValueError(
+            "Manifest has invalid paper-specific included runs: "
+            f"unknown_papers={sorted(unknown_papers)}, "
+            f"invalid_combinations={sorted(invalid_combinations)}"
+        )
+    expected = {
+        (paper, combo)
+        for paper in papers
+        for combo in per_paper.get(paper, combinations)
+    }
+    expected_count = manifest.get("included_run_count")
+    if expected_count is not None and int(expected_count) != len(expected):
+        raise ValueError(
+            f"Manifest included_run_count={expected_count} but included run set "
+            f"contains {len(expected)}"
+        )
+
+    duplicates = df_runs.duplicated(["paper_slug", "approach"], keep=False)
+    if duplicates.any():
+        duplicate_rows = sorted(set(
+            zip(df_runs.loc[duplicates, "paper_slug"].astype(str),
+                df_runs.loc[duplicates, "approach"].astype(str))
+        ))
+        raise ValueError(f"Duplicate production runs found: {duplicate_rows}")
+
+    actual = set(zip(
+        df_runs["paper_slug"].astype(str),
+        df_runs["approach"].astype(str),
+    ))
+    unexpected = sorted(actual - expected)
+    absent = sorted(expected - actual)
+    if unexpected or absent:
+        details = []
+        if unexpected:
+            details.append(f"unexpected={unexpected}")
+        if absent:
+            details.append(f"missing={absent}")
+        raise ValueError("Loaded run set does not match sample manifest: " + "; ".join(details))
+
+    print(
+        f"  Sample manifest validated: {len(papers)} papers, "
+        f"{len(combinations)} combinations, {len(actual)} runs"
+    )
 
 
 # ============================================================================
@@ -2294,11 +2401,12 @@ def plot_scatter_vs_grade(df: pd.DataFrame, x_col: str, x_label: str, output_dir
         return
 
     fig, ax = plt.subplots(figsize=(7, 5.5))
+    jitter_rng = np.random.default_rng(42)
     for approach in _approaches_in(df_plot):
         sub = df_plot[df_plot["approach"] == approach]
         if sub.empty:
             continue
-        ax.scatter(sub[x_col], sub[grade_col] + np.random.uniform(-0.15, 0.15, len(sub)),
+        ax.scatter(sub[x_col], sub[grade_col] + jitter_rng.uniform(-0.15, 0.15, len(sub)),
                    color=APPROACH_COLORS.get(approach, "#95a5a6"), label=APPROACH_LABELS.get(approach, approach).replace("\n", " "),
                    alpha=0.6, s=60, edgecolor="white", linewidth=0.5)
 
@@ -2567,11 +2675,12 @@ def plot_duration_vs_grade(df_runs: pd.DataFrame, output_dir: Path, subdir: str 
     apply_style(ax)
 
     ax2 = axes[1]
+    jitter_rng = np.random.default_rng(42)
     for approach in _approaches_in(df):
         sub = df[df["approach"] == approach]
         if sub.empty:
             continue
-        ax2.scatter(sub["duration_seconds"] / 60, sub["overall_grade_num"] + np.random.uniform(-0.15, 0.15, len(sub)),
+        ax2.scatter(sub["duration_seconds"] / 60, sub["overall_grade_num"] + jitter_rng.uniform(-0.15, 0.15, len(sub)),
                    color=APPROACH_COLORS.get(approach, "#95a5a6"), label=APPROACH_LABELS.get(approach, approach).replace("\n", " "),
                    alpha=0.6, s=60, edgecolor="white", linewidth=0.5)
     ax2.set_xlabel("Duration (minutes)", fontsize=18, fontweight="bold")
@@ -2679,6 +2788,634 @@ def plot_duration_vs_grade(df_runs: pd.DataFrame, output_dir: Path, subdir: str 
         apply_style(ax5)
         plt.tight_layout()
         save_figure(fig4, output_dir, "cost_by_approach", subdir)
+
+
+# ============================================================================
+# Section: Computational Efficiency
+# ============================================================================
+
+# $/M tokens (input, output), March 2026 list prices. Used only to impute run
+# cost where the scaffold did not report one (Codex CLI). The cached-input
+# share of those runs is unknown, so imputed costs are upper bounds.
+MODEL_PRICING_USD_PER_MTOK = {
+    "gpt-5.3-codex": (1.75, 14.00),
+    "gpt-5.4": (1.75, 14.00),
+}
+
+# A table counts as a "success" if graded at or above this set.
+EFFICIENCY_SUCCESS_GRADES = {"A", "B"}
+
+EFFICIENCY_EFFORT_DIMS = {
+    # effort key -> (per-run column, axis label, figure name)
+    "cost": ("cost_usd", "Mean cost per paper (USD, log scale)",
+             "efficiency_frontier_cost"),
+    "tokens": ("completion_ktok", "Mean completion tokens per paper (thousands, log scale)",
+               "efficiency_frontier_tokens"),
+    "time": ("duration_min", "Mean wall-clock time per paper (minutes, log scale)",
+             "efficiency_frontier_time"),
+}
+
+
+def _effort_frame(df_runs: pd.DataFrame, df_items: pd.DataFrame,
+                  f_mode: str = "all_f") -> pd.DataFrame:
+    """One row per run with effort and success metrics.
+
+    Success = number of table items graded in EFFICIENCY_SUCCESS_GRADES under
+    the given f_mode. NA tables stay in the denominator: they are identical
+    across approaches, so they shift all success rates equally.
+    Cost is the reported run cost where available, otherwise imputed from the
+    prompt/completion token split via MODEL_PRICING_USD_PER_MTOK.
+    """
+    grade_col = f"grade_{f_mode}"
+    tables = df_items[df_items["item_type"] == "table"].copy()
+    if grade_col not in tables.columns:
+        grade_col = "grade"
+    tables["_success"] = tables[grade_col].astype("object").isin(EFFICIENCY_SUCCESS_GRADES).astype(int)
+    per_run = (
+        tables.groupby(["paper_slug", "approach"], observed=True)
+        .agg(n_tables=("_success", "size"), n_success=("_success", "sum"))
+        .reset_index()
+    )
+
+    # Select only what we need from df_runs — it already has its own
+    # n_tables/n_figures columns which would collide in the merge.
+    grade_num_cols = [c for c in df_runs.columns
+                      if c == "overall_grade_num" or (c.startswith("overall_grade_") and c.endswith("_num"))]
+    run_cols = (["paper_slug", "approach", "model", "total_cost_usd",
+                 "prompt_tokens", "completion_tokens", "duration_seconds"] + grade_num_cols)
+    df = df_runs[run_cols].merge(per_run, on=["paper_slug", "approach"], how="left")
+    df["n_tables"] = df["n_tables"].fillna(0).astype(int)
+    df["n_success"] = df["n_success"].fillna(0).astype(int)
+
+    reported = pd.to_numeric(df["total_cost_usd"], errors="coerce")
+    prices = df["model"].map(MODEL_PRICING_USD_PER_MTOK)
+    prompt_tok = pd.to_numeric(df["prompt_tokens"], errors="coerce").fillna(0)
+    compl_tok = pd.to_numeric(df["completion_tokens"], errors="coerce").fillna(0)
+    imputed = np.array([
+        (p[0] * pt + p[1] * ct) / 1e6 if isinstance(p, tuple) and (pt + ct) > 0 else np.nan
+        for p, pt, ct in zip(prices, prompt_tok, compl_tok)
+    ])
+    df["cost_imputed"] = reported.isna() | (reported <= 0)
+    df["cost_usd"] = np.where(df["cost_imputed"], imputed, reported)
+    df["duration_min"] = pd.to_numeric(df["duration_seconds"], errors="coerce") / 60
+    df["completion_ktok"] = compl_tok.replace(0, np.nan) / 1e3
+    return df
+
+
+def _bootstrap_effort_ci(sub: pd.DataFrame, effort_col: str,
+                         n_boot: int = 1000, seed: int = 42) -> tuple:
+    """Paper-level bootstrap of (mean effort, success rate) for one approach.
+
+    Returns ((x_lo, x_hi), (y_lo, y_hi)) 95% percentile intervals.
+    """
+    rng = np.random.default_rng(seed)
+    n = len(sub)
+    effort = sub[effort_col].values
+    succ = sub["n_success"].values
+    tabs = sub["n_tables"].values
+    xs, ys = [], []
+    for _ in range(n_boot):
+        idx = rng.integers(0, n, n)
+        e = effort[idx]
+        e = e[~np.isnan(e)]
+        xs.append(e.mean() if len(e) else np.nan)
+        denom = tabs[idx].sum()
+        ys.append(succ[idx].sum() / denom if denom else np.nan)
+    return ((np.nanpercentile(xs, 2.5), np.nanpercentile(xs, 97.5)),
+            (np.nanpercentile(ys, 2.5), np.nanpercentile(ys, 97.5)))
+
+
+def generate_efficiency_table(df_runs: pd.DataFrame, df_items: pd.DataFrame,
+                              output_dir: Path, subdir: str = "",
+                              f_mode: str = "all_f", n_boot: int = 1000):
+    """Per-approach efficiency table: effort per run and cost-of-pass metrics.
+
+    Cost-of-pass = E[cost per run] / E[successful tables per run], i.e. the
+    expected spend to obtain one table replicated at grade B or better
+    (Erol et al. 2025). Same construction for minutes and completion tokens.
+    """
+    target = output_dir / subdir if subdir else output_dir
+    target.mkdir(parents=True, exist_ok=True)
+    df = _effort_frame(df_runs, df_items, f_mode=f_mode)
+    if df.empty:
+        print("  Skipping efficiency_table: no data")
+        return
+
+    grade_num_col = f"overall_grade_{f_mode}_num"
+    if grade_num_col not in df.columns:
+        grade_num_col = "overall_grade_num"
+
+    rng = np.random.default_rng(42)
+    rows = []
+    for approach in _approaches_in(df):
+        sub = df[df["approach"] == approach]
+        if sub.empty:
+            continue
+        n = len(sub)
+        total_success = sub["n_success"].sum()
+        total_tables = sub["n_tables"].sum()
+        success_rate = total_success / total_tables * 100 if total_tables else np.nan
+        any_imputed = sub["cost_imputed"].any()
+
+        def _per_success(col):
+            vals = sub[col]
+            # Restrict both numerator and denominator to runs where the
+            # effort measure is observed, so the ratio stays internally
+            # consistent when a run is missing e.g. duration.
+            ok = vals.notna()
+            n_succ = sub.loc[ok, "n_success"].sum()
+            return vals[ok].sum() / n_succ if n_succ else np.nan
+
+        cop = _per_success("cost_usd")
+        # Paper-level bootstrap CI for cost-of-pass
+        cops = []
+        sub_cost = sub[sub["cost_usd"].notna()]
+        for _ in range(n_boot):
+            idx = rng.integers(0, len(sub_cost), len(sub_cost))
+            s = sub_cost.iloc[idx]
+            denom = s["n_success"].sum()
+            cops.append(s["cost_usd"].sum() / denom if denom else np.nan)
+        cop_lo, cop_hi = np.nanpercentile(cops, 2.5), np.nanpercentile(cops, 97.5)
+
+        dagger = r"$^\dagger$" if any_imputed else ""
+        rows.append({
+            "approach": approach,
+            "label": APPROACH_LABELS.get(approach, approach).replace("\n", " "),
+            "n_runs": n,
+            "success_rate_pct": success_rate,
+            "mean_grade": sub[grade_num_col].mean(),
+            "median_min_per_run": sub["duration_min"].median(),
+            "median_ktok_out_per_run": sub["completion_ktok"].median(),
+            "median_cost_per_run": sub["cost_usd"].median(),
+            "cost_imputed": any_imputed,
+            "n_cost_imputed": int(sub["cost_imputed"].sum()),
+            "cost_per_success": cop,
+            "cost_per_success_ci_lo": cop_lo,
+            "cost_per_success_ci_hi": cop_hi,
+            "min_per_success": _per_success("duration_min"),
+            "ktok_out_per_success": _per_success("completion_ktok"),
+            "_dagger": dagger,
+        })
+
+    tab = pd.DataFrame(rows)
+    tab.drop(columns=["_dagger"]).to_csv(target / "efficiency_table.csv", index=False)
+
+    lines = [
+        r"\begin{table}[h]",
+        r"\centering",
+        r"\caption{Computational effort and efficiency by scaffold/model. Success = table "
+        r"replicated at grade B or better (" + f_mode.replace("_", r"\_") + r" grading). "
+        r"Cost-of-pass = expected cost per successfully replicated table. "
+        r"$^\dagger$Cost imputed from token counts at list prices for one or more runs "
+        r"(upper bound: cached-input discounts unavailable). "
+        r"95\% CIs from a paper-level bootstrap.}",
+        r"\label{tab:efficiency}",
+        r"\begin{tabular}{lrrrrrrrr}",
+        r"\toprule",
+        r" & & & \multicolumn{3}{c}{Median per run} & \multicolumn{3}{c}{Per successful table} \\",
+        r"\cmidrule(lr){4-6} \cmidrule(lr){7-9}",
+        r"Scaffold/Model & Tables $\geq$B (\%) & Grade & Min & kTok out & USD & USD [95\% CI] & Min & kTok out \\",
+        r"\midrule",
+    ]
+    for _, r_ in tab.iterrows():
+        def _f(v, fmt="{:.1f}"):
+            return fmt.format(v) if pd.notna(v) else "—"
+        dag = r"$^\dagger$" if r_["cost_imputed"] else ""
+        lines.append(
+            f"{r_['label']} & {_f(r_['success_rate_pct'])} & {_f(r_['mean_grade'], '{:.2f}')} & "
+            f"{_f(r_['median_min_per_run'])} & {_f(r_['median_ktok_out_per_run'], '{:.0f}')} & "
+            f"{_f(r_['median_cost_per_run'], '{:.2f}')}{dag} & "
+            f"{_f(r_['cost_per_success'], '{:.2f}')}{dag} "
+            f"[{_f(r_['cost_per_success_ci_lo'], '{:.2f}')}, {_f(r_['cost_per_success_ci_hi'], '{:.2f}')}] & "
+            f"{_f(r_['min_per_success'])} & {_f(r_['ktok_out_per_success'], '{:.0f}')} \\\\"
+        )
+    lines += [r"\bottomrule", r"\end{tabular}", r"\end{table}"]
+    (target / "efficiency_table.tex").write_text("\n".join(lines))
+    print(f"  Saved {subdir + '/' if subdir else ''}efficiency_table (.csv + .tex)")
+
+
+def generate_efficiency_regression(df_runs: pd.DataFrame, df_items: pd.DataFrame,
+                                   output_dir: Path, subdir: str = "",
+                                   f_mode: str = "all_f"):
+    """LPM of replication success on scaffold dummies and effort, two panels.
+
+    Panel A (table level): outcome = 100 x 1(table grade >= B); NA counts as
+    failure, matching the efficiency table's success-rate definition.
+    Panel B (run level): outcome = share of the run's tables >= B (in %).
+    Effort telemetry only varies at the run level, so Panel B is the natural
+    level for the effort coefficient; Panel A implicitly weights runs by their
+    table count. Specs: (1) baseline with paper FE; (2) + log2 tokens, FE;
+    (3) + log2 tokens WITHOUT paper FE (absorbs paper difficulty into the
+    effort coefficient — the FE/no-FE contrast shows the difficulty confound);
+    (4)-(6) linear effort with FE (per +10k completion tokens, +10 minutes,
+    +1 USD). SEs clustered by paper. Common sample of runs with complete
+    telemetry throughout.
+
+    Descriptive, not causal: effort is chosen by the agent, not assigned.
+    """
+    import statsmodels.formula.api as smf
+
+    target = output_dir / subdir if subdir else output_dir
+    target.mkdir(parents=True, exist_ok=True)
+
+    eff = _effort_frame(df_runs, df_items, f_mode=f_mode)
+    grade_col = f"grade_{f_mode}"
+    tables = df_items[df_items["item_type"] == "table"].copy()
+    if grade_col not in tables.columns:
+        grade_col = "grade"
+    tables["success"] = tables[grade_col].astype("object").isin(
+        EFFICIENCY_SUCCESS_GRADES).astype(float) * 100
+
+    run_cols = ["paper_slug", "approach", "cost_usd", "duration_min", "completion_ktok"]
+    dfA = tables.merge(eff[run_cols], on=["paper_slug", "approach"], how="left")
+    n_all = len(dfA)
+    dfA = dfA[dfA["cost_usd"].notna() & dfA["duration_min"].notna()
+              & dfA["completion_ktok"].notna()].copy()
+    if len(dfA) < n_all:
+        print(f"  efficiency_regression: common sample {len(dfA)}/{n_all} table items "
+              f"(dropped runs with incomplete effort telemetry)")
+    if dfA.empty:
+        print("  Skipping efficiency_regression: no data")
+        return
+
+    for d in (dfA,):
+        d["approach"] = d["approach"].astype(str)
+        d["log2_ktok"] = np.log2(d["completion_ktok"])
+        d["ktok10"] = d["completion_ktok"] / 10
+        d["min10"] = d["duration_min"] / 10
+        d["cost1"] = d["cost_usd"]
+
+    dfB = (dfA.groupby(["paper_slug", "approach"], observed=True)
+           .agg(success=("success", "mean"),
+                log2_ktok=("log2_ktok", "first"), ktok10=("ktok10", "first"),
+                min10=("min10", "first"), cost1=("cost1", "first"))
+           .reset_index())
+
+    gnum = f"overall_grade_{f_mode}_num"
+    if gnum not in eff.columns:
+        gnum = "overall_grade_num"
+    dfC = eff[eff["cost_usd"].notna() & eff["duration_min"].notna()
+              & eff["completion_ktok"].notna() & eff[gnum].notna()].copy()
+    dfC["approach"] = dfC["approach"].astype(str)
+    dfC["success"] = dfC[gnum]
+    dfC["log2_ktok"] = np.log2(dfC["completion_ktok"])
+    dfC["ktok10"] = dfC["completion_ktok"] / 10
+    dfC["min10"] = dfC["duration_min"] / 10
+    dfC["cost1"] = dfC["cost_usd"]
+
+    ref = "claude-code/claude-opus-4-6"
+    scaff = f"C(approach, Treatment('{ref}'))"
+    fe = " + C(paper_slug)"
+    SPECS = [
+        ("(1)", scaff + fe, None, True),
+        ("(2)", scaff + fe + " + log2_ktok", "log2_ktok", True),
+        ("(3)", scaff + " + log2_ktok", "log2_ktok", False),
+        ("(4)", scaff + fe + " + ktok10", "ktok10", True),
+        ("(5)", scaff + fe + " + min10", "min10", True),
+        ("(6)", scaff + fe + " + cost1", "cost1", True),
+    ]
+    EFFORT_LABELS = {
+        "log2_ktok": r"log$_2$(completion tokens)",
+        "ktok10": r"Completion tokens (per +10k)",
+        "min10": r"Minutes (per +10)",
+        "cost1": r"Cost (per +\$1)",
+    }
+
+    def stars(p):
+        return "***" if p < 0.01 else ("**" if p < 0.05 else ("*" if p < 0.1 else ""))
+
+    panels, rows_csv = [], []
+    for panel_name, d in (("A. Table level, 1(table $\\geq$ B)", dfA),
+                          ("B. Run level, share of tables $\\geq$ B", dfB),
+                          ("C. Run level, paper grade (0--5)", dfC)):
+        fitted = []
+        for col_name, formula, effort_var, has_fe in SPECS:
+            m = smf.ols("success ~ " + formula, data=d).fit(
+                cov_type="cluster", cov_kwds={"groups": d["paper_slug"]})
+            fitted.append((col_name, m, has_fe))
+            for name, coef, se, p in zip(m.params.index, m.params, m.bse, m.pvalues):
+                if name.startswith("C(paper_slug)") or name == "Intercept":
+                    continue
+                rows_csv.append({"panel": panel_name, "spec": col_name,
+                                 "paper_fe": has_fe, "term": name, "coef": coef,
+                                 "se": se, "pvalue": p, "n": int(m.nobs),
+                                 "r2": m.rsquared})
+        panels.append((panel_name, d, fitted))
+    pd.DataFrame(rows_csv).to_csv(target / "efficiency_regression.csv", index=False)
+
+    scaffold_terms = [(a, f"C(approach, Treatment('{ref}'))[T.{a}]")
+                      for a in APPROACH_MODEL_ORDER if a != ref]
+
+    def cell(m, term):
+        if term not in m.params.index:
+            return "", ""
+        c, s, p = m.params[term], m.bse[term], m.pvalues[term]
+        return f"{c:.2f}{stars(p)}", f"({s:.2f})"
+
+    ncols = len(SPECS)
+    lines = [
+        r"\begin{table}[h]",
+        r"\centering",
+        r"\caption{Replication success and computational effort. Linear probability "
+        r"models; outcome in Panel A $= 100 \times \mathbf{1}(\text{table grade} \geq B)$ "
+        r"(one observation per table; " + f_mode.replace("_", r"\_") + r" grading, NA "
+        r"counts as failure), in Panel B $=$ the share of a run's tables graded $\geq B$, "
+        r"in Panel C $=$ the run's overall paper grade on a 0--5 scale (Panels B/C: one "
+        r"observation per paper $\times$ scaffold run). Effort telemetry varies at "
+        r"the run level only, so Panels B/C are the natural level for the effort "
+        r"coefficients. Reference category: Claude Code Opus 4.6. Column (3) omits "
+        r"paper fixed effects. Common sample of runs with complete telemetry; Codex CLI "
+        r"costs imputed from tokens at list prices. Effort is agent-chosen: "
+        r"coefficients are descriptive, not causal. SEs clustered by paper in "
+        r"parentheses. $^{*}p<0.1$, $^{**}p<0.05$, $^{***}p<0.01$.}",
+        r"\label{tab:efficiency_regression}",
+        r"\begin{tabular}{l" + "c" * ncols + "}",
+        r"\toprule",
+        " & " + " & ".join(cn for cn, _, _, _ in SPECS) + r" \\",
+    ]
+    for panel_name, d, fitted in panels:
+        lines += [
+            r"\midrule",
+            r"\multicolumn{" + str(ncols + 1) + r"}{l}{\textit{Panel " + panel_name + r"}} \\",
+            r"\addlinespace",
+        ]
+        for a, term in scaffold_terms:
+            label = APPROACH_MODEL_LABELS.get(a, a).replace("\n", " ")
+            coefs = [cell(m, term) for _, m, _ in fitted]
+            lines.append(label + " & " + " & ".join(c for c, _ in coefs) + r" \\")
+            lines.append(" & " + " & ".join(s for _, s in coefs) + r" \\")
+        lines.append(r"\addlinespace")
+        for var, label in EFFORT_LABELS.items():
+            coefs = [cell(m, var) for _, m, _ in fitted]
+            if all(c == "" for c, _ in coefs):
+                continue
+            lines.append(label + " & " + " & ".join(c for c, _ in coefs) + r" \\")
+            lines.append(" & " + " & ".join(s for _, s in coefs) + r" \\")
+        lines.append(r"\addlinespace")
+        lines.append(r"Paper FE & " + " & ".join("Yes" if h else "No" for _, _, h in fitted) + r" \\")
+        lines.append(r"Observations & " + " & ".join(f"{int(m.nobs):,}" for _, m, _ in fitted) + r" \\")
+        lines.append(r"R$^2$ & " + " & ".join(f"{m.rsquared:.3f}" for _, m, _ in fitted) + r" \\")
+        lines.append(r"Mean dep.\ var.\ & "
+                     + " & ".join([f"{d['success'].mean():.1f}"] * ncols) + r" \\")
+    lines += [r"\bottomrule", r"\end{tabular}", r"\end{table}"]
+    (target / "efficiency_regression.tex").write_text("\n".join(lines))
+
+    # Standalone table: run-level paper-grade regression only (Panel C).
+    _, dC, fittedC = panels[2]
+    linesC = [
+        r"\begin{table}[h]",
+        r"\centering",
+        r"\caption{Paper grade and computational effort (run level). OLS; outcome "
+        r"$=$ the run's overall paper grade mapped to a 0--5 scale (A=5, \ldots, F=0; "
+        + f_mode.replace("_", r"\_") + r" grading), one observation per paper $\times$ "
+        r"scaffold run. Reference category: Claude Code Opus 4.6. Effort in column (2) "
+        r"is $\log_2$, i.e.\ grade points per doubling; column (3) omits paper fixed "
+        r"effects; columns (4)--(6) use linear effort (per $+$10k completion tokens, "
+        r"$+$10 minutes, $+\$1$). Common sample of runs with complete telemetry; Codex "
+        r"CLI costs imputed from tokens at list prices. Effort is agent-chosen: "
+        r"coefficients are descriptive, not causal. SEs clustered by paper in "
+        r"parentheses. $^{*}p<0.1$, $^{**}p<0.05$, $^{***}p<0.01$.}",
+        r"\label{tab:efficiency_regression_papergrade}",
+        r"\begin{tabular}{l" + "c" * ncols + "}",
+        r"\toprule",
+        " & " + " & ".join(cn for cn, _, _, _ in SPECS) + r" \\",
+        r"\midrule",
+    ]
+    for a, term in scaffold_terms:
+        label = APPROACH_MODEL_LABELS.get(a, a).replace("\n", " ")
+        coefs = [cell(m, term) for _, m, _ in fittedC]
+        linesC.append(label + " & " + " & ".join(c for c, _ in coefs) + r" \\")
+        linesC.append(" & " + " & ".join(s for _, s in coefs) + r" \\")
+    linesC.append(r"\midrule")
+    for var, label in EFFORT_LABELS.items():
+        coefs = [cell(m, var) for _, m, _ in fittedC]
+        if all(c == "" for c, _ in coefs):
+            continue
+        linesC.append(label + " & " + " & ".join(c for c, _ in coefs) + r" \\")
+        linesC.append(" & " + " & ".join(s for _, s in coefs) + r" \\")
+    linesC += [
+        r"\midrule",
+        r"Paper FE & " + " & ".join("Yes" if h else "No" for _, _, h in fittedC) + r" \\",
+        r"Observations & " + " & ".join(f"{int(m.nobs):,}" for _, m, _ in fittedC) + r" \\",
+        r"R$^2$ & " + " & ".join(f"{m.rsquared:.3f}" for _, m, _ in fittedC) + r" \\",
+        r"Mean dep.\ var.\ & " + " & ".join([f"{dC['success'].mean():.2f}"] * ncols) + r" \\",
+        r"\bottomrule",
+        r"\end{tabular}",
+        r"\end{table}",
+    ]
+    (target / "efficiency_regression_papergrade.tex").write_text("\n".join(linesC))
+
+    # Correlational table: outcome ~ ONE effort measure + paper FE, NO scaffold
+    # dummies. Answers "do runs that spend more do better on the same paper,
+    # pooling across scaffolds" — scaffold quality and scaffold spending policy
+    # are deliberately NOT partialled out here.
+    OUTCOMES = [
+        (r"1(table $\geq$ B)", dfA),
+        (r"Share tables $\geq$ B", dfB),
+        (r"Paper grade (0--5)", dfC),
+    ]
+    corr_rows_csv = []
+    corr_fits = {}
+    for out_label, d in OUTCOMES:
+        for var in EFFORT_LABELS:
+            m = smf.ols(f"success ~ {var} + C(paper_slug)", data=d).fit(
+                cov_type="cluster", cov_kwds={"groups": d["paper_slug"]})
+            corr_fits[(out_label, var)] = m
+            corr_rows_csv.append({"panel": "correlational_no_scaffold_fe",
+                                  "spec": out_label, "paper_fe": True,
+                                  "term": var, "coef": m.params[var],
+                                  "se": m.bse[var], "pvalue": m.pvalues[var],
+                                  "n": int(m.nobs), "r2": m.rsquared})
+    pd.concat([pd.DataFrame(rows_csv), pd.DataFrame(corr_rows_csv)]).to_csv(
+        target / "efficiency_regression.csv", index=False)
+
+    linesX = [
+        r"\begin{table}[h]",
+        r"\centering",
+        r"\caption{Within-paper correlation of effort and replication success, pooled "
+        r"across scaffolds. Each cell is a separate regression of the column outcome on "
+        r"the row effort measure and paper fixed effects, WITHOUT scaffold/model "
+        r"dummies: the coefficient answers whether runs that spend more do better on "
+        r"the same paper, regardless of which scaffold spends it (scaffold identity is "
+        r"deliberately not held constant). Outcomes as in the main efficiency "
+        r"regression: column (1) table level, columns (2)--(3) run level. Effort "
+        r"units: log$_2$ (per doubling), or linear per $+$10k completion tokens, "
+        r"$+$10 minutes, $+\$1$. Common telemetry sample; SEs clustered by paper in "
+        r"parentheses. $^{*}p<0.1$, $^{**}p<0.05$, $^{***}p<0.01$.}",
+        r"\label{tab:efficiency_correlational}",
+        r"\begin{tabular}{lccc}",
+        r"\toprule",
+        r" & " + " & ".join(f"{ol}" for ol, _ in OUTCOMES) + r" \\",
+        r"\midrule",
+    ]
+    for var, vlabel in EFFORT_LABELS.items():
+        cells_c, cells_s = [], []
+        for out_label, _ in OUTCOMES:
+            m = corr_fits[(out_label, var)]
+            c, s = cell(m, var)
+            cells_c.append(c)
+            cells_s.append(s)
+        linesX.append(vlabel + " & " + " & ".join(cells_c) + r" \\")
+        linesX.append(" & " + " & ".join(cells_s) + r" \\")
+    linesX += [
+        r"\midrule",
+        r"Paper FE & Yes & Yes & Yes \\",
+        r"Scaffold FE & No & No & No \\",
+        r"Observations & " + " & ".join(f"{len(d):,}" for _, d in OUTCOMES) + r" \\",
+        r"\bottomrule",
+        r"\end{tabular}",
+        r"\end{table}",
+    ]
+    (target / "efficiency_regression_correlational.tex").write_text("\n".join(linesX))
+
+    # Two-column contrast: paper grade on log2 tokens + paper FE,
+    # (1) without vs (2) with scaffold/model dummies. The effort coefficient's
+    # collapse between the columns is the "effort proxies scaffold quality"
+    # result in its most compact form.
+    m1 = corr_fits[(r"Paper grade (0--5)", "log2_ktok")]
+    m2 = next(m for cn, m, _ in panels[2][2] if cn == "(2)")
+    linesT = [
+        r"\begin{table}[h]",
+        r"\centering",
+        r"\caption{Paper grade and completion tokens, within paper (run level). OLS; "
+        r"outcome $=$ the run's overall paper grade on a 0--5 scale (A=5, \ldots, F=0; "
+        + f_mode.replace("_", r"\_") + r" grading), one observation per paper $\times$ "
+        r"scaffold run. Column (1): tokens and paper fixed effects only — the pooled "
+        r"within-paper association. Column (2) adds scaffold/model dummies (reference: "
+        r"Claude Code Opus 4.6). Tokens in $\log_2$: coefficients read as grade points "
+        r"per doubling. Common telemetry sample. Effort is agent-chosen: coefficients "
+        r"are descriptive, not causal. SEs clustered by paper in parentheses. "
+        r"$^{*}p<0.1$, $^{**}p<0.05$, $^{***}p<0.01$.}",
+        r"\label{tab:papergrade_tokens_contrast}",
+        r"\begin{tabular}{lcc}",
+        r"\toprule",
+        r" & (1) & (2) \\",
+        r"\midrule",
+    ]
+    c1, s1 = cell(m1, "log2_ktok")
+    c2, s2 = cell(m2, "log2_ktok")
+    linesT.append(r"log$_2$(completion tokens) & " + c1 + " & " + c2 + r" \\")
+    linesT.append(" & " + s1 + " & " + s2 + r" \\")
+    linesT.append(r"\addlinespace")
+    for a, term in scaffold_terms:
+        label = APPROACH_MODEL_LABELS.get(a, a).replace("\n", " ")
+        c2, s2 = cell(m2, term)
+        linesT.append(label + r" &  & " + c2 + r" \\")
+        linesT.append(r" &  & " + s2 + r" \\")
+    linesT += [
+        r"\midrule",
+        r"Paper FE & Yes & Yes \\",
+        r"Scaffold/model FE & No & Yes \\",
+        r"Observations & " + f"{int(m1.nobs):,} & {int(m2.nobs):,}" + r" \\",
+        r"R$^2$ & " + f"{m1.rsquared:.3f} & {m2.rsquared:.3f}" + r" \\",
+        r"Mean dep.\ var.\ & " + f"{dfC['success'].mean():.2f} & {dfC['success'].mean():.2f}" + r" \\",
+        r"\bottomrule",
+        r"\end{tabular}",
+        r"\end{table}",
+    ]
+    (target / "efficiency_regression_tokens_contrast.tex").write_text("\n".join(linesT))
+    print(f"  Saved {subdir + '/' if subdir else ''}efficiency_regression "
+          f"(.tex + .csv) + papergrade.tex + correlational.tex + tokens_contrast.tex")
+    return panels
+
+
+def plot_efficiency_frontier(df_runs: pd.DataFrame, df_items: pd.DataFrame,
+                             output_dir: Path, subdir: str = "",
+                             f_mode: str = "all_f", effort: str = "cost",
+                             n_boot: int = 1000):
+    """Success rate vs per-run effort, one point per scaffold/model, with the
+    Pareto frontier. Points below/right of the frontier are dominated."""
+    effort_col, xlabel, fig_name = EFFICIENCY_EFFORT_DIMS[effort]
+    df = _effort_frame(df_runs, df_items, f_mode=f_mode)
+    if df.empty:
+        print(f"  Skipping {fig_name}: no data")
+        return
+
+    pts = []
+    for approach in _approaches_in(df):
+        sub_all = df[df["approach"] == approach]
+        sub_obs = sub_all[sub_all[effort_col].notna()]
+        if sub_obs.empty or sub_all["n_tables"].sum() == 0:
+            print(f"  {fig_name}: dropping {approach} (no {effort_col} data)")
+            continue
+        if len(sub_obs) < len(sub_all):
+            print(f"  {fig_name}: {approach} effort from {len(sub_obs)}/{len(sub_all)} runs "
+                  f"(missing {effort_col})")
+        # Success rate over ALL runs (identical across effort dimensions and
+        # to the efficiency table); mean effort over runs with telemetry.
+        x = sub_obs[effort_col].mean()
+        y = sub_all["n_success"].sum() / sub_all["n_tables"].sum()
+        (x_lo, x_hi), (y_lo, y_hi) = _bootstrap_effort_ci(sub_all, effort_col, n_boot=n_boot)
+        pts.append({
+            "approach": approach, "x": x, "y": y,
+            "x_lo": x_lo, "x_hi": x_hi, "y_lo": y_lo, "y_hi": y_hi,
+            "n_runs": len(sub_all), "n_runs_with_effort": len(sub_obs),
+            "cost_imputed": bool(sub_obs["cost_imputed"].any()) if effort == "cost" else False,
+        })
+    if not pts:
+        print(f"  Skipping {fig_name}: no approaches with data")
+        return
+
+    pdf = pd.DataFrame(pts)
+    # Pareto frontier: a point is dominated if some other point has
+    # lower-or-equal effort and strictly higher success.
+    pdf = pdf.sort_values(["x", "y"], ascending=[True, False]).reset_index(drop=True)
+    best_y = -np.inf
+    on_frontier = []
+    for _, r_ in pdf.iterrows():
+        on_frontier.append(r_["y"] > best_y)
+        best_y = max(best_y, r_["y"])
+    pdf["on_frontier"] = on_frontier
+
+    target = output_dir / subdir if subdir else output_dir
+    target.mkdir(parents=True, exist_ok=True)
+    pdf.to_csv(target / f"{fig_name}.csv", index=False)
+
+    fig, ax = plt.subplots(figsize=(8.5, 6))
+    front = pdf[pdf["on_frontier"]]
+    ax.step(front["x"], front["y"] * 100, where="post", color="#95a5a6",
+            linestyle="--", linewidth=1.8, zorder=1, label="Pareto frontier")
+
+    # Label placement: above-right by default; when two points are close in
+    # (log-x, y), the lower/leftmost one's label flips to below-left.
+    log_x = np.log10(pdf["x"])
+    label_pos = {}
+    for i in pdf.index:
+        dx, dy, ha = 8, 6, "left"
+        for j in pdf.index:
+            if j == i:
+                continue
+            close = (abs(log_x[i] - log_x[j]) < 0.15
+                     and abs(pdf.at[i, "y"] - pdf.at[j, "y"]) * 100 < 6)
+            if close and (pdf.at[i, "y"], pdf.at[i, "x"]) < (pdf.at[j, "y"], pdf.at[j, "x"]):
+                dx, dy, ha = -10, -20, "right"
+        label_pos[i] = (dx, dy, ha)
+
+    for i, r_ in pdf.iterrows():
+        color = APPROACH_COLORS.get(r_["approach"], "#95a5a6")
+        label = APPROACH_LABELS.get(r_["approach"], r_["approach"]).replace("\n", " ")
+        if r_["cost_imputed"]:
+            label += " †"
+        ax.errorbar(r_["x"], r_["y"] * 100,
+                    xerr=[[r_["x"] - r_["x_lo"]], [r_["x_hi"] - r_["x"]]],
+                    yerr=[[(r_["y"] - r_["y_lo"]) * 100], [(r_["y_hi"] - r_["y"]) * 100]],
+                    fmt="o", markersize=11, color=color, ecolor=color,
+                    elinewidth=1.3, capsize=3, alpha=0.9, zorder=5)
+        dx, dy, ha = label_pos[i]
+        ax.annotate(label, (r_["x"], r_["y"] * 100),
+                    xytext=(dx, dy), textcoords="offset points", ha=ha,
+                    fontsize=10, fontweight="bold", color=color)
+    ax.set_xscale("log")
+    ax.set_xlabel(xlabel, fontsize=13, fontweight="bold")
+    ax.set_ylabel("Tables replicated at grade $\\geq$ B (%)", fontsize=13, fontweight="bold")
+    if pdf["cost_imputed"].any():
+        ax.text(0.02, 0.02, "† ≥1 run's cost imputed from tokens (upper bound)",
+                transform=ax.transAxes, ha="left", va="bottom", fontsize=9,
+                color="#7f8c8d")
+    ax.legend(fontsize=10, loc="lower right")
+    apply_style(ax)
+    plt.tight_layout()
+    save_figure(fig, output_dir, fig_name, subdir)
 
 
 # ============================================================================
@@ -4276,6 +5013,11 @@ def _load_error_analysis(error_analysis_dir: Path) -> pd.DataFrame:
     if not error_analysis_dir.exists():
         return pd.DataFrame()
     for enriched_path in error_analysis_dir.rglob("divergences_enriched.json"):
+        # only the live error_source/ dir — archived variants (e.g.
+        # error_source.preunclear_20260414/) hold superseded verdicts for the
+        # SAME divergences and would double-count every record
+        if enriched_path.parent.name != "error_source":
+            continue
         data = _load_json(enriched_path)
         if not data:
             continue
@@ -6257,6 +6999,8 @@ def main():
     parser.add_argument("--results-dir", type=str, default=None)
     parser.add_argument("--papers-dir", type=str, default=None)
     parser.add_argument("--output-dir", type=str, default="analysis_output")
+    parser.add_argument("--sample-manifest", type=str, default=None,
+                        help="Validate the exact paper/run set against a pinned JSON manifest")
     parser.add_argument("--complete-filter", action="store_true",
                         help="Enable filtering to only tables where all approaches succeeded")
     parser.add_argument("--complete-papers", action="store_true",
@@ -6299,6 +7043,8 @@ def main():
     if df_runs.empty:
         print("No results found. Exiting.")
         return
+    if args.sample_manifest:
+        validate_sample_manifest(df_runs, Path(args.sample_manifest))
 
     # Cell-level relabel F → NA where original value is missing (default on).
     if args.regrade_na:
@@ -6446,6 +7192,14 @@ def main():
                               output_dir, "data_size_vs_grade", log_x=True, subdir=PL, f_mode=f_mode)
         plot_grade_by_discipline(df_runs, output_dir, subdir=PL, f_mode=f_mode)
         plot_grade_by_language(df_runs, output_dir, subdir=PL, f_mode=f_mode)
+
+    # ── Computational Efficiency ──────────────────────────────────
+    EF = "efficiency"
+    print(f"\n{EF}")
+    generate_efficiency_table(df_runs, df_items, output_dir, subdir=EF)
+    generate_efficiency_regression(df_runs, df_items, output_dir, subdir=EF)
+    for _effort in EFFICIENCY_EFFORT_DIMS:
+        plot_efficiency_frontier(df_runs, df_items, output_dir, subdir=EF, effort=_effort)
 
     # ── Item Level — Tables ───────────────────────────────────────
     IT = "item_tables"

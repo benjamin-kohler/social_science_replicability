@@ -1,0 +1,9 @@
+# Direct analysis dependencies from the successful Tier-2 round-trip on textlab.
+# Runtime used: CPython 3.10.12. This is an analysis lock, not a complete lock
+# for executing every benchmark agent or downloader in the repository.
+matplotlib==3.10.8
+numpy==2.2.5
+pandas==2.2.3
+scipy==1.15.3
+seaborn==0.13.2
+statsmodels==0.14.6

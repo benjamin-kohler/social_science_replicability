@@ -293,7 +293,8 @@ def _plot_cascade(
     if out_path.exists() and not rerun:
         print(f"SKIP: {out_path} (use --rerun)"); return
 
-    paper_colors = {p: c for p, c in zip(papers, PAPER_PALETTE)}
+    from itertools import cycle
+    paper_colors = {p: c for p, c in zip(papers, cycle(PAPER_PALETTE))}
     n_agents     = len(agents)
     x_max        = 4.2
 
