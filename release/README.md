@@ -14,8 +14,8 @@ The release consists of three linked components:
    analysis programs in `scripts/`, the frozen sample manifest in `config/`, and
    tests in `tests/`.
 2. **Derived artifacts (separate deposit).** Sanitized agent workspaces, run and
-   verification records, error-attribution records, frozen usage metadata,
-   human-audit data, and generated analysis outputs.
+   verification records, error-attribution records, frozen usage metadata, and
+   human-audit data. Generated plots and tables are deliberately not deposited.
 3. **Third-party inputs (links only).** Published papers, replication packages,
    original code, and input datasets are not redistributed. The artifact deposit
    provides their source URLs and license metadata.
@@ -51,10 +51,13 @@ Download and unpack the accompanying derived-artifact deposit, then follow its
 - the released stability, extractor-ablation, and pre/post-cutoff runs;
 - derived error-attribution records;
 - released metadata and usage sidecars; and
-- `scripts/analyze_i4rep_results.py` from this repository.
+- `scripts/analyze_paper_outputs.py` from this repository. This entry point runs
+  the underlying analyses but publishes only the plots and tables referenced by
+  the manuscript.
 
 The derived artifact is sufficient to regenerate the reported tables and
-figures. It does not require paper PDFs, replication packages, original author
+figures into a new output directory. It does not include generated analysis
+outputs and does not require paper PDFs, replication packages, original author
 code, input datasets, private provider databases, or unredacted local logs.
 
 The artifact's agent logs preserve their substantive content. Credentials and

@@ -338,8 +338,9 @@ def plot_mean_grade_comparison(df: pd.DataFrame, output_dir: Path):
                        fontsize=10, rotation=25, ha="right")
     ax.set_xlabel("")
     ax.set_ylabel("Mean Grade (excl. F)", fontsize=18, fontweight="bold")
-    ax.set_yticks(range(6))
-    ax.set_yticklabels(GRADE_ORDER[::-1])
+    numeric_grade_labels = [grade for grade in GRADE_ORDER if grade != "NA"]
+    ax.set_yticks(range(len(numeric_grade_labels)))
+    ax.set_yticklabels(numeric_grade_labels[::-1])
     place_legend(fig, ax, fontsize=14)
     apply_style(ax)
     plt.tight_layout()
@@ -440,8 +441,9 @@ def plot_bootstrap_comparison(df: pd.DataFrame, output_dir: Path):
                        fontsize=12)
     ax.set_xlabel("")
     ax.set_ylabel("Mean Table Grade (excl. F)", fontsize=18, fontweight="bold")
-    ax.set_yticks(range(6))
-    ax.set_yticklabels(GRADE_ORDER[::-1])
+    numeric_grade_labels = [grade for grade in GRADE_ORDER if grade != "NA"]
+    ax.set_yticks(range(len(numeric_grade_labels)))
+    ax.set_yticklabels(numeric_grade_labels[::-1])
     place_legend(fig, ax, fontsize=14)
     apply_style(ax)
     plt.tight_layout()

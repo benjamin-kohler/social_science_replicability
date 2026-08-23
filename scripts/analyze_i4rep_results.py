@@ -544,14 +544,19 @@ def _parse_approach_from_dirname(dirname: str, paper_slug: str) -> tuple[str, st
 
 def _load_extracted_table_row_types(run_dir: Path) -> dict[tuple[str, str, str], str]:
     lookup = {}
+    paper_slug = run_dir.parent.name
     for ms_path in [
         # run_dir / "explainer_workspace" / "methodology_summary.json",
         run_dir / "workspace" / "methodology_summary.json",
+        # Extractor-variant workspaces contain a reduced Markdown-methods
+        # summary without extracted_tables. Fall back to the shared full
+        # summary so their judged cells receive the same row-type enrichment.
+        run_dir.parent / "summaries" / f"{paper_slug}_summary.json",
     ]:
         if not ms_path.exists():
             continue
         ms = _load_json(ms_path)
-        if not ms:
+        if not ms or not ms.get("extracted_tables"):
             continue
         for table in ms.get("extracted_tables", []):
             table_id = table.get("table_id", "")
