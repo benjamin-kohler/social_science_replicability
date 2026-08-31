@@ -8,6 +8,7 @@ tool-call composition, main-vs-subagent split, and per-metric summaries
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -399,6 +400,21 @@ def _augment_codex_with_rollout(run: Run) -> None:
     rollout_cwd = (meta.get("payload") or {}).get("cwd", "")
     rollout_id = _rollout_identity(rollout_cwd)
     workspace_id = _rollout_identity(str(run.workspace))
+    if rollout_id is None and rollout_cwd == "[REDACTED]":
+        # Public releases redact the private absolute cwd from session_meta.
+        # A small sidecar records the identity check performed before
+        # redaction and binds it to the sanitized rollout by SHA-256.
+        identity_path = run.workspace / "session_rollout_identity.json"
+        try:
+            identity = json.loads(identity_path.read_text())
+            rollout_sha = hashlib.sha256(rollout_path.read_bytes()).hexdigest()
+            if (
+                identity.get("identity_verified_before_redaction") is True
+                and identity.get("sanitized_rollout_sha256") == rollout_sha
+            ):
+                rollout_id = (identity.get("paper"), identity.get("run_dir"))
+        except (OSError, json.JSONDecodeError):
+            pass
     if rollout_id is None or workspace_id is None or rollout_id != workspace_id:
         # Cross-run contamination — mtime heuristic picked a different run's
         # rollout. Drop the run entirely rather than using a mixed dataset.
