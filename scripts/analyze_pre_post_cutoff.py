@@ -418,7 +418,7 @@ def plot_bootstrap_comparison(df: pd.DataFrame, output_dir: Path):
 
         # Add n labels
         for i, n in enumerate(ns):
-            ax.text(x[i] + offset, 0.15, f"n={n}", ha="center", fontsize=11,
+            ax.text(x[i] + offset, 0.15, f"n={n}", ha="center", fontsize=14,
                     color="white", fontweight="bold")
 
     # Permutation test p-values
@@ -435,19 +435,19 @@ def plot_bootstrap_comparison(df: pd.DataFrame, output_dir: Path):
             ax.plot([x[i] - width/2, x[i] - width/2, x[i] + width/2, x[i] + width/2],
                     [y_max, y_max + 0.1, y_max + 0.1, y_max], color="black", linewidth=1)
             sig = "n.s." if p > 0.05 else (f"p={p:.3f}" if p > 0.001 else "p<0.001")
-            ax.text(x[i], y_max + 0.15, sig, ha="center", fontsize=12)
+            ax.text(x[i], y_max + 0.15, sig, ha="center", fontsize=16)
 
     ax.set_xticks(x)
     ax.set_xticklabels([APPROACH_MODEL_LABELS.get(a, a).replace("\n", " ") for a in common],
-                       fontsize=14)
+                       fontsize=18)
     ax.set_xlabel("")
-    ax.set_ylabel("Mean Table Grade (excl. F)", fontsize=20, fontweight="bold")
+    ax.set_ylabel("Mean Table Grade (excl. F)", fontsize=24, fontweight="bold")
     numeric_grade_labels = [grade for grade in GRADE_ORDER if grade != "NA"]
     ax.set_yticks(range(len(numeric_grade_labels)))
     ax.set_yticklabels(numeric_grade_labels[::-1])
-    place_legend(fig, ax, fontsize=16)
+    place_legend(fig, ax, fontsize=20)
     apply_style(ax)
-    ax.tick_params(axis="y", labelsize=16)
+    ax.tick_params(axis="y", labelsize=20)
     plt.tight_layout()
     save_figure(fig, output_dir, "bootstrap_grade_comparison")
 
