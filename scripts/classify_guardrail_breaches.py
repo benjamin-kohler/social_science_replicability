@@ -52,6 +52,8 @@ DEFAULT_MODEL = "gpt-5.4-mini-2026-03-17"
 DEFAULT_MAX_IN_FLIGHT = 10
 DEFAULT_MAX_FILE_CHARS = 500_000
 DEFAULT_MAX_TOTAL_CHARS = 1_400_000
+DEFAULT_GUARDRAIL_MAX_TOTAL_FILE_CHARS = 100_000
+DEFAULT_MAX_EVENT_TRACE_CHARS = 450_000
 DEFAULT_MAX_TOOL_OUTPUT_CHARS = 250
 
 DEFAULT_API_RETRIES = 3
@@ -1018,9 +1020,21 @@ def make_event_trace(run_record: dict, workspace_dir: Path) -> tuple[str, list[d
     raw_trace = raw_trace.replace(ws_prefix, "workspace/")
 
     original_chars = len(raw_trace)
-    included_chars = original_chars
-    truncated = False
-    trace_text = _number_lines(raw_trace)
+    numbered_trace = _number_lines(raw_trace)
+    truncated = len(numbered_trace) > DEFAULT_MAX_EVENT_TRACE_CHARS
+    if truncated:
+        half = DEFAULT_MAX_EVENT_TRACE_CHARS // 2
+        head = numbered_trace[:half].rsplit("\n", 1)[0]
+        tail = numbered_trace[-half:].split("\n", 1)[-1]
+        omitted = max(0, len(numbered_trace) - len(head) - len(tail))
+        trace_text = (
+            f"{head}\n[... {omitted} rendered characters omitted from the middle "
+            "because the event trace exceeded the model context budget ...]\n"
+            f"{tail}"
+        )
+    else:
+        trace_text = numbered_trace
+    included_chars = len(trace_text)
     meta = {
         "event_trace_truncated": truncated,
         "event_trace_original_chars": original_chars,
@@ -1187,7 +1201,7 @@ def build_guardrail_prompt(
     file_blocks, prompt_meta = _collect_guardrail_files(
         workspace_dir=workspace_dir,
         max_file_chars=DEFAULT_MAX_FILE_CHARS,
-        max_total_chars=DEFAULT_MAX_TOTAL_CHARS,
+        max_total_chars=DEFAULT_GUARDRAIL_MAX_TOTAL_FILE_CHARS,
     )
     prompt_meta.update(event_trace_meta)
     prompt = GUARDRAIL_USER_PROMPT_TEMPLATE.format(
