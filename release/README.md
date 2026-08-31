@@ -64,6 +64,35 @@ The artifact's agent logs preserve their substantive content. Credentials and
 local operational identifiers are replaced with `[REDACTED]`, and the deposit
 includes the redaction and validation reports.
 
+### Supplementary appendix analyses
+
+The paper-only entry point above covers the 35 benchmark-result outputs. The
+human-audit, tool-usage, and guardrail/hardcoding appendix analyses have separate
+entry points because they consume annotation exports or agent logs rather than
+the benchmark result frames:
+
+```bash
+# Human-validation tables (including Gwet's AC1)
+python scripts/human_audit/05_analyze_annotations.py \
+  --audit-dir /path/to/tier2/human_audit \
+  --output-dir supplementary_outputs/human_audit
+
+# Tool-call action and character-volume figures
+python scripts/analyze_tool_usage.py \
+  --results-dir /path/to/tier2/runs/production \
+  --plots-dir supplementary_outputs/tool_usage
+
+# Figures from the frozen LLM audit decisions shipped with the artifact
+python scripts/plot_guardrail_audits.py \
+  --audit-dir /path/to/tier2/audit_inputs \
+  --results-dir /path/to/tier2/runs/production \
+  --output-dir supplementary_outputs/guardrail_audits
+```
+
+The frozen audit CSVs are derived, model-reviewed records. Re-running
+`scripts/classify_guardrail_breaches.py` would constitute a new stochastic LLM
+audit rather than an exact reproduction of the published classifications.
+
 ## Error-attribution analysis
 
 `scripts/error_analysis/` is the release copy of the error-attribution pipeline

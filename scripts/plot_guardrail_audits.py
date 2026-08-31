@@ -13,6 +13,7 @@ by classify_guardrail_breaches.py and writes 4 PDF/PNG plots into ./plots/.
 # - **Section 1**: Guardrails — forbidden access / provenance violations
 # - **Section 2**: Hardcoding — hardcoded result values in .py scripts
 
+import argparse
 import os
 from pathlib import Path
 import pandas as pd
@@ -21,9 +22,33 @@ import seaborn as sns
 import numpy as np
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-RESULTS_ROOT = Path(os.environ.get(
-    "I4REPLICATE_RESULTS_DIR", str(PROJECT_ROOT / "data" / "i4replicate" / "results"),
-))
+
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument(
+    "--audit-dir", type=Path, default=Path.cwd(),
+    help="Directory containing guardrails_audit_*.csv and hardcoding_audit_*.csv.",
+)
+parser.add_argument(
+    "--results-dir", type=Path,
+    default=Path(os.environ.get(
+        "I4REPLICATE_RESULTS_DIR",
+        str(PROJECT_ROOT / "data" / "i4replicate" / "results"),
+    )),
+    help="Benchmark results root used to attach verification grades.",
+)
+parser.add_argument(
+    "--output-dir", type=Path, default=None,
+    help="Figure output directory (default: AUDIT_DIR/plots).",
+)
+args = parser.parse_args()
+
+AUDIT_DIR = args.audit_dir.expanduser().resolve()
+RESULTS_ROOT = args.results_dir.expanduser().resolve()
+PLOTS_DIR = (
+    args.output_dir.expanduser().resolve()
+    if args.output_dir is not None
+    else AUDIT_DIR / "plots"
+)
 
 sns.set_theme(style="whitegrid", font_scale=1.4)
 plt.rcParams.update({
@@ -37,9 +62,7 @@ plt.rcParams.update({
     "ytick.labelsize": 14,
 })
 
-AUDIT_DIR = Path(".")
-PLOTS_DIR = AUDIT_DIR / "plots"
-PLOTS_DIR.mkdir(exist_ok=True)
+PLOTS_DIR.mkdir(parents=True, exist_ok=True)
 
 MODEL_APPROACH_LABELS = {
     ("claude-opus-4-6", "claude-code"): "Claude Code\nOpus 4.6",
@@ -584,5 +607,4 @@ if len(hardcoding_run_type):
     plt.show()
 else:
     print("No hardcoding instances found.")
-
 

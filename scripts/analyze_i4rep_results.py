@@ -2419,12 +2419,11 @@ def plot_scatter_vs_grade(df: pd.DataFrame, x_col: str, x_label: str, output_dir
         ax.set_xscale("log")
     ax.set_xlabel(x_label, fontsize=18, fontweight="bold")
     ax.set_ylabel("Overall Grade", fontsize=18, fontweight="bold")
-    # OLD: excluded F
-    # grades_shown = [g for g in GRADE_ORDER if g != "F"] if exclude_f else GRADE_ORDER
-    # NEW: exclude NA (no numeric value) from y-axis ticks always
     grades_shown = [g for g in GRADE_ORDER if g != "NA"]
+    if f_mode == "no_f":
+        grades_shown = [g for g in grades_shown if g != "F"]
     ax.set_yticks([GRADE_TO_NUM[g] for g in grades_shown])
-    ax.set_yticklabels(grades_shown[::-1])
+    ax.set_yticklabels(grades_shown)
     place_legend(fig, ax, fontsize=12)
     apply_style(ax)
     plt.tight_layout()
@@ -2690,12 +2689,9 @@ def plot_duration_vs_grade(df_runs: pd.DataFrame, output_dir: Path, subdir: str 
                    alpha=0.6, s=60, edgecolor="white", linewidth=0.5)
     ax2.set_xlabel("Duration (minutes)", fontsize=18, fontweight="bold")
     ax2.set_ylabel("Overall Grade", fontsize=18, fontweight="bold")
-    # OLD: excluded F
-    # grades_shown = [g for g in GRADE_ORDER if g != "F"]
-    # NEW: exclude NA instead
     grades_shown = [g for g in GRADE_ORDER if g != "NA"]
     ax2.set_yticks([GRADE_TO_NUM[g] for g in grades_shown])
-    ax2.set_yticklabels(grades_shown[::-1])
+    ax2.set_yticklabels(grades_shown)
     place_legend(fig, ax2, fontsize=12)
     apply_style(ax2)
 
@@ -3495,6 +3491,8 @@ def plot_grade_distribution_by_table_type(df_items: pd.DataFrame, output_dir: Pa
         ax = axes[ax_idx]
         sub = df[df["table_category"] == cat]
         n_tables = len(sub)
+        ax.set_title(f"{category_labels.get(cat, cat)}\n(n={n_tables})",
+                     fontsize=12, fontweight="bold")
         ct = pd.crosstab(sub["approach"], sub["grade"], normalize="index") * 100
         ct = ct.reindex(columns=grades_shown, fill_value=0)
         present = [a for a in approaches if a in ct.index]
@@ -3547,6 +3545,17 @@ def plot_grade_cumulative_by_table_type(df_items: pd.DataFrame, output_dir: Path
     grades_cum = ["A", "B", "C", "D", "E"] if f_mode == "no_f" else ["A", "B", "C", "D", "E", "F"]
     approaches = _approaches_in(df)
 
+    # Use one row order across every category so a horizontal position always
+    # denotes the same model/scaffold.  Sorting each panel independently makes
+    # cross-panel comparisons impossible, even when the first panel is labelled.
+    overall_ct = pd.crosstab(df["approach"], df["grade"], normalize="index") * 100
+    overall_ct = overall_ct.reindex(columns=grades_cum, fill_value=0)
+    overall_ge_b = overall_ct[[g for g in ("A", "B") if g in overall_ct.columns]].sum(axis=1)
+    approach_position = {approach: i for i, approach in enumerate(approaches)}
+    global_order = [approach for approach in approaches if approach in overall_ge_b.index]
+    global_order.sort(key=lambda approach: (-overall_ge_b.loc[approach],
+                                            approach_position[approach]))
+
     n_cats = len(cats_present)
     fig, axes = plt.subplots(1, n_cats, figsize=(4.5 * n_cats, 5.5), sharey=True)
     if n_cats == 1:
@@ -3557,6 +3566,8 @@ def plot_grade_cumulative_by_table_type(df_items: pd.DataFrame, output_dir: Path
         sub = df[df["table_category"] == cat]
         if sub.empty:
             continue
+        ax.set_title(f"{category_labels.get(cat, cat)}\n(n={len(sub)})",
+                     fontsize=12, fontweight="bold")
 
         ct = pd.crosstab(sub["approach"], sub["grade"], normalize="index") * 100
         ct = ct.reindex(columns=grades_cum, fill_value=0)
@@ -3565,10 +3576,7 @@ def plot_grade_cumulative_by_table_type(df_items: pd.DataFrame, output_dir: Path
         for i, g in enumerate(grades_cum):
             cum[f"≥{g}"] = ct[grades_cum[:i + 1]].sum(axis=1)
 
-        present = [a for a in approaches if a in cum.index]
-        sort_key = cum.loc[present, "≥B"].values
-        order = np.argsort(-sort_key)
-        present = [present[i] for i in order]
+        present = [approach for approach in global_order if approach in cum.index]
 
         y_pos = np.arange(len(present))
         for g_idx, g in enumerate(grades_cum):
@@ -3591,13 +3599,16 @@ def plot_grade_cumulative_by_table_type(df_items: pd.DataFrame, output_dir: Path
                 tick_label.set_color(APPROACH_COLORS.get(a, "#95a5a6"))
                 tick_label.set_fontweight("bold")
         else:
-            ax.set_yticklabels([])
+            # With sharey=True, set_yticklabels([]) would clear the shared
+            # formatter and remove the model names from the first panel too.
+            ax.tick_params(axis="y", labelleft=False)
         ax.invert_yaxis()
         ax.set_xlim(0, 105)
         n_tables = len(sub)
         apply_style(ax)
 
     axes[0].set_xlabel("Cumulative share of tables (%)", fontsize=11, fontweight="bold")
+    axes[0].set_ylabel("Model / scaffold", fontsize=11, fontweight="bold")
     plt.tight_layout()
     save_figure(fig, output_dir, f"grade_cumulative_by_table_type{F_MODE_SUFFIX[f_mode]}", subdir)
 

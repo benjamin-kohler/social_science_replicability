@@ -377,6 +377,12 @@ def parse_args() -> argparse.Namespace:
         "--results-dir",
         help="Optional results root to audit instead of the default cohort results directory.",
     )
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=OUTPUT_ROOT,
+        help=f"Directory for audit CSVs and prompt artifacts (default: {OUTPUT_ROOT}).",
+    )
     parser.add_argument("--run-name", help="Exact run directory name to audit.")
     parser.add_argument("--paper-id", help="Optional paper id filter.")
     parser.add_argument("--approach", help="Optional approach filter, e.g. codex.")
@@ -1653,6 +1659,7 @@ def _audit_one_run(
 def main() -> None:
     args = parse_args()
     mode = args.mode
+    output_root = args.output_dir.expanduser().resolve()
     run_entries = _filter_run_dirs(args)
     if not run_entries:
         raise SystemExit("No runs matched the provided filters.")
@@ -1665,14 +1672,14 @@ def main() -> None:
     prompt_dirname = f"{mode}_audit_{RUN_TIMESTAMP}_prompts"
     prompt_latest_dirname = f"{mode}_prompts_latest"
 
-    aggregate_csv_path = OUTPUT_ROOT / csv_filename
-    analysis_csv_path = OUTPUT_ROOT / csv_latest_filename
-    prompt_output_dir = OUTPUT_ROOT / prompt_dirname
-    analysis_prompt_output_dir = OUTPUT_ROOT / prompt_latest_dirname
+    aggregate_csv_path = output_root / csv_filename
+    analysis_csv_path = output_root / csv_latest_filename
+    prompt_output_dir = output_root / prompt_dirname
+    analysis_prompt_output_dir = output_root / prompt_latest_dirname
 
     fieldnames = GUARDRAIL_CSV_FIELDNAMES if mode == "guardrails" else HARDCODING_CSV_FIELDNAMES
 
-    OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)
+    output_root.mkdir(parents=True, exist_ok=True)
     prompt_output_dir.mkdir(parents=True, exist_ok=True)
 
     api_key = ""
