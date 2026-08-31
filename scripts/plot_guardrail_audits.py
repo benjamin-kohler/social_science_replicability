@@ -225,11 +225,11 @@ if available_regex_cols:
     # Cross-tab: regex_any_forbidden vs LLM overall_assessment
     print("\nRegex forbidden vs LLM assessment:")
     if "regex_any_forbidden" in guardrail_run_df.columns:
-        display(pd.crosstab(
+        print(pd.crosstab(
             guardrail_run_df["regex_any_forbidden"],
             guardrail_run_df["overall_assessment"],
             margins=True,
-        ))
+        ).to_string())
 else:
     print("No regex columns found in CSV (run with v2 script to get them)")
 
@@ -238,7 +238,9 @@ if "regex_forbidden_paths" in guardrail_run_df.columns:
     flagged = guardrail_run_df[guardrail_run_df["regex_forbidden_paths"].fillna("") != ""].copy()
     if len(flagged):
         print(f"Runs with regex-detected forbidden paths: {len(flagged)}")
-        display(flagged[["run_name", "overall_assessment", "regex_forbidden_paths", "regex_web_urls"]].head(20))
+        print(flagged[[
+            "run_name", "overall_assessment", "regex_forbidden_paths", "regex_web_urls",
+        ]].head(20).to_string(index=False))
     else:
         print("No runs with regex-detected forbidden paths.")
 
@@ -607,4 +609,3 @@ if len(hardcoding_run_type):
     plt.show()
 else:
     print("No hardcoding instances found.")
-
