@@ -296,6 +296,13 @@ _HARNESS_LOG_SPECS: dict[str, tuple[str, callable]] = {
 def parse_run(run: Run) -> Run:
     log_name, parser = _HARNESS_LOG_SPECS[run.harness]
     p = run.workspace / log_name
+    # Tier-2 releases keep the SWE-Agent trajectory with the other preserved
+    # replicator logs in ``explainer_workspace``.  Accept that canonical copy
+    # so the trace figures reproduce without duplicating a large JSON file.
+    if run.harness == "swe-agent" and not p.exists():
+        release_copy = run.workspace.parent / "explainer_workspace" / "replicator_trajectory.json"
+        if release_copy.exists():
+            p = release_copy
     if not p.exists():
         run.log_missing = True
         return run
