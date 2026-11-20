@@ -9,6 +9,7 @@ Reproduction of Social-Science Results"*.
 
 
 [Read the paper](https://elliottash.com/wp-content/uploads/2026/04/Kohler-Zollikofer-Einsiedler-Hoyle-Ash-Read-Paper-Write-Code-Agentic-Reproduction-Social-Science-Results.pdf)
+
 [Data artifact repository on Zenodo](https://zenodo.org/records/22070275)
 
 
